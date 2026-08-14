@@ -56,7 +56,9 @@ flowchart TD
 | Evolução | Multiagentes, segurança, permissões e UI |
 | Expansão | Operação doméstica confiável e Alexa |
 
-As fases são acompanhadas pelas Issues e pelo quadro do projeto no GitHub. O roteiro detalhado, com tarefas, entregáveis, critérios de pronto e conteúdo de aprendizagem, está em [docs/plano-amp-open-source.md](docs/plano-amp-open-source.md).
+As fases são acompanhadas pelas [Issues](https://github.com/caleo-hub/amp-open-source/issues) e pelos [marcos](https://github.com/caleo-hub/amp-open-source/milestones). O quadro visual do GitHub Projects será vinculado aqui quando a permissão específica de Projects estiver disponível.
+
+O roteiro detalhado, com tarefas, entregáveis, critérios de pronto e conteúdo de aprendizagem, está em [docs/plano-amp-open-source.md](docs/plano-amp-open-source.md).
 
 ## Estado atual
 
