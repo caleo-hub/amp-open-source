@@ -6,7 +6,7 @@ from typing import Any
 from psycopg.types.json import Jsonb
 from psycopg.errors import UniqueViolation
 
-from .config import (
+from ..config.settings import (
     AMP_AGENT_KEY,
     AMP_AGENT_VERSION,
     GRAPH_VERSION,

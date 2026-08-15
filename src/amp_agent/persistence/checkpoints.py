@@ -2,7 +2,7 @@ from uuid import UUID
 
 from langgraph.checkpoint.postgres import PostgresSaver
 
-from .config import database_settings
+from ..config.settings import database_settings
 
 
 def delete_thread(conversation_id: UUID) -> None:

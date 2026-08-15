@@ -2,7 +2,7 @@ import time
 
 from langchain_core.messages import HumanMessage
 
-from .graph import graph
+from ..agent.graph import graph
 
 
 EXIT_COMMANDS = {

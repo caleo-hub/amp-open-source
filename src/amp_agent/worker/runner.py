@@ -7,14 +7,14 @@ import uuid
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.postgres import PostgresSaver
 
-from .config import (
+from ..config.settings import (
     GRAPH_VERSION,
     JOB_HEARTBEAT_SECONDS,
     JOB_LEASE_SECONDS,
     STATE_VERSION,
 )
-from .graph import build_graph
-from .repositories import (
+from ..agent.graph import build_graph
+from ..persistence.repositories import (
     claim_job,
     complete_job,
     fail_job,
@@ -119,7 +119,7 @@ def run_worker() -> None:
 
     signal.signal(signal.SIGTERM, stop_handler)
     signal.signal(signal.SIGINT, stop_handler)
-    from .config import database_settings
+    from ..config.settings import database_settings
     dsn = database_settings().dsn("langgraph,public")
     with PostgresSaver.from_conn_string(dsn) as checkpointer:
         graph = build_graph(checkpointer)

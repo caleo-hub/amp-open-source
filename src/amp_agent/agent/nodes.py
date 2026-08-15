@@ -12,7 +12,7 @@ from .prompts import (
     SMART_SYSTEM_PROMPT,
 )
 from .state import AgentState, ModelProfile
-from .tools import pesquisar_web, system_status
+from ..tools import pesquisar_web, system_status
 
 # -------------------------------------------------------------------
 # Modelos

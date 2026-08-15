@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from .config import (
+from ..config.settings import (
     SEARXNG_BASE_URL,
     WEB_SEARCH_MAX_RESULTS,
     WEB_SEARCH_MAX_SNIPPET_CHARS,

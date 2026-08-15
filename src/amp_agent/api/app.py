@@ -10,12 +10,12 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .config import (
+from ..config.settings import (
     CHAT_WAIT_TIMEOUT_SECONDS,
     REPLY_CHANNELS,
     VOICE_WAIT_TIMEOUT_SECONDS,
 )
-from .repositories import (
+from ..persistence.repositories import (
     create_conversation,
     enqueue_execution,
     get_conversation,

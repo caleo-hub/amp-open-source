@@ -5,7 +5,7 @@ from pathlib import Path
 import psycopg
 from psycopg.rows import dict_row
 
-from .config import database_settings
+from ..config.settings import database_settings
 
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"

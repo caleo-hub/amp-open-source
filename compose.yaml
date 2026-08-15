@@ -23,7 +23,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["python", "-m", "amp_agent.migrations_runner"]
+    command: ["python", "-m", "amp_agent.persistence.migrations_runner"]
     environment:
       PYTHONUNBUFFERED: "1"
       AMP_DB_HOST: amp-db
@@ -73,7 +73,7 @@ services:
     container_name: amp-worker
     network_mode: host
     restart: unless-stopped
-    command: ["python", "-m", "amp_agent.worker"]
+    command: ["python", "-m", "amp_agent.worker.runner"]
     environment:
       PYTHONUNBUFFERED: "1"
       OLLAMA_BASE_URL: "http://localhost:11434"

@@ -2,8 +2,8 @@ import json
 
 from langchain_core.tools import tool
 
-from .system import get_system_status
-from .web_search import search_web
+from ..services.system import get_system_status
+from ..services.searxng import search_web
 
 
 @tool
