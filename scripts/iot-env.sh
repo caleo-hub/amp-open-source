@@ -12,3 +12,5 @@ export IOT_KEY="$(find "$HOME/amp/app/secrets/iot" -name '*-private.pem.key' | h
 export IOT_CLIENT_ID="amp-ubuntu"
 export IOT_COMMAND_TOPIC="amp/ubuntu/command"
 export IOT_RESPONSE_PREFIX="amp/ubuntu/response"
+export AMP_VOICE_URL="http://127.0.0.1:8000/voice"
+export AMP_VOICE_SECRET_PATH="$HOME/amp/app/secrets/amp_voice_api_key.txt"

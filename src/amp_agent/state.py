@@ -7,6 +7,11 @@ from typing_extensions import TypedDict
 ModelProfile = Literal["fast", "smart"]
 
 
-class AgentState(TypedDict):
+class AgentState(TypedDict, total=False):
     messages: Annotated[list, add_messages]
     profile: ModelProfile
+    state_version: int
+    execution_id: str
+    conversation_id: str
+    input_message_id: str
+    graph_version: str
