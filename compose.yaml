@@ -1,0 +1,23 @@
+services:
+  amp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: amp-api
+
+    network_mode: host
+
+    restart: unless-stopped
+
+    environment:
+      PYTHONUNBUFFERED: "1"
+      OLLAMA_BASE_URL: "http://localhost:11434"
+
+    secrets:
+      - source: amp_voice_api_key
+        target: amp_voice_api_key
+
+secrets:
+  amp_voice_api_key:
+    file: ./secrets/amp_voice_api_key.txt
