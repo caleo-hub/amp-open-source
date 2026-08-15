@@ -93,6 +93,37 @@ services:
         condition: service_healthy
       amp-migrate:
         condition: service_completed_successfully
+
+  amp-iot-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: amp-iot-bridge
+    network_mode: host
+    restart: unless-stopped
+    command: ["python", "-m", "amp_agent.integrations.aws_iot.bridge"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      IOT_ENDPOINT: "a11ogvst1mo5zr-ats.iot.us-east-1.amazonaws.com"
+      IOT_CA: "/run/secrets/iot/AmazonRootCA1.pem"
+      IOT_CERT: "/run/secrets/iot/device-certificate.pem.crt"
+      IOT_KEY: "/run/secrets/iot/device-private.pem.key"
+      IOT_CLIENT_ID: "amp-ubuntu"
+      IOT_COMMAND_TOPIC: "amp/ubuntu/command"
+      IOT_RESPONSE_PREFIX: "amp/ubuntu/response"
+      AMP_VOICE_URL: "http://127.0.0.1:8000/voice"
+      AMP_VOICE_RESULT_URL: "http://127.0.0.1:8000/voice/executions"
+      AMP_VOICE_SECRET_PATH: "/run/secrets/amp_voice_api_key"
+    volumes:
+      - ./secrets/iot/AmazonRootCA1.pem:/run/secrets/iot/AmazonRootCA1.pem:ro
+      - ./secrets/iot/cc2240010c1f360268e87b9adfea69e78c1b6fa70db153d4a93ac04b33e9bdb5-certificate.pem.crt:/run/secrets/iot/device-certificate.pem.crt:ro
+      - ./secrets/iot/cc2240010c1f360268e87b9adfea69e78c1b6fa70db153d4a93ac04b33e9bdb5-private.pem.key:/run/secrets/iot/device-private.pem.key:ro
+    secrets:
+      - amp_voice_api_key
+    depends_on:
+      amp-api:
+        condition: service_started
+
   amp-searxng:
     image: docker.io/searxng/searxng:latest
     container_name: amp-searxng
