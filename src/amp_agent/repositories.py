@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from psycopg.types.json import Jsonb
+from psycopg.errors import UniqueViolation
 
 from .config import (
     AMP_AGENT_KEY,
@@ -103,17 +104,17 @@ def enqueue_execution(
     dedupe_key = f"{source}:{idempotency_key}"
 
     with connection() as conn:
-        existing = _existing_request(conn, source, request_id, idempotency_key)
-        if existing:
-            conn.commit()
-            return {"execution": get_execution(existing["execution_id"]), "duplicate": True}
-
         conversation = conn.execute(
             "SELECT id FROM amp.conversations WHERE id = %s FOR UPDATE",
             (conversation_id,),
         ).fetchone()
         if not conversation:
             raise ValueError("Conversa não encontrada.")
+
+        existing = _existing_request(conn, source, request_id, idempotency_key)
+        if existing:
+            conn.commit()
+            return {"execution": get_execution(existing["execution_id"]), "duplicate": True}
 
         seq_row = conn.execute(
             """
@@ -124,25 +125,28 @@ def enqueue_execution(
         ).fetchone()
         sequence_no = seq_row["next_sequence"]
 
-        conn.execute(
-            """
-            INSERT INTO amp.inbound_requests(
-                id, source, request_id, idempotency_key, conversation_id,
-                execution_id, payload, reply_channel, deadline_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                inbound_id,
-                source,
-                request_id,
-                idempotency_key,
-                conversation_id,
-                execution_id,
-                Jsonb(payload or {"text": content}),
-                reply_channel,
-                deadline_at,
-            ),
-        )
+        try:
+            conn.execute(
+                """
+                INSERT INTO amp.inbound_requests(
+                    id, source, request_id, idempotency_key, conversation_id,
+                    execution_id, payload, reply_channel, deadline_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    inbound_id, source, request_id, idempotency_key,
+                    conversation_id, execution_id, Jsonb(payload or {"text": content}),
+                    reply_channel, deadline_at,
+                ),
+            )
+        except UniqueViolation:
+            conn.rollback()
+            existing = _existing_request(conn, source, request_id, idempotency_key)
+            if not existing:
+                raise
+            conn.commit()
+            return {"execution": get_execution(existing["execution_id"]), "duplicate": True}
+
         conn.execute(
             """
             INSERT INTO amp.executions(
@@ -272,9 +276,47 @@ def list_messages(conversation_id: uuid.UUID) -> list[dict]:
         return [dict(row) for row in rows]
 
 
+def recover_expired_jobs(conn=None) -> int:
+    """Requeue running jobs whose worker lease expired, atomically."""
+    if conn is None:
+        with connection() as owned:
+            count = recover_expired_jobs(owned)
+            owned.commit()
+            return count
+
+    rows = conn.execute(
+        """
+        SELECT id, execution_id FROM amp.jobs
+        WHERE status = 'running' AND lease_expires_at IS NOT NULL
+          AND lease_expires_at <= now()
+        FOR UPDATE SKIP LOCKED
+        """
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            """
+            UPDATE amp.jobs
+            SET status = 'retry', available_at = now(),
+                lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+                heartbeat_at = NULL, last_error_code = 'lease_expired',
+                last_error = 'Lease do worker expirou.', updated_at = now()
+            WHERE id = %s AND status = 'running'
+            """, (row["id"],),
+        )
+        conn.execute(
+            """
+            UPDATE amp.executions SET status = 'queued', updated_at = now()
+            WHERE id = %s AND status = 'running'
+            """, (row["execution_id"],),
+        )
+        _event(conn, row["execution_id"], "job.lease_expired")
+    return len(rows)
+
+
 def claim_job(worker_id: str, lease_seconds: int) -> dict | None:
     token = uuid.uuid4()
     with connection() as conn:
+        recover_expired_jobs(conn)
         row = conn.execute(
             """
             SELECT j.*, e.status AS execution_status
@@ -346,6 +388,13 @@ def heartbeat(job_id: uuid.UUID, lease_token: uuid.UUID, lease_seconds: int) -> 
 
 def complete_job(job: dict, result: str) -> bool:
     with connection() as conn:
+        locked = conn.execute(
+            "SELECT id FROM amp.conversations WHERE id = %s FOR UPDATE",
+            (job["conversation_id"],),
+        ).fetchone()
+        if not locked:
+            conn.commit()
+            return False
         row = conn.execute(
             """
             UPDATE amp.jobs

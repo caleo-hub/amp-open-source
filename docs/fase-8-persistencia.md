@@ -37,3 +37,14 @@ scripts/restore-postgres.sh backups/amp-postgres-<timestamp>.dump
 ```
 
 Depois de restaurar, valide a continuidade de uma conversa usando `/v1/executions/{id}` e o histórico em `/v1/conversations/{id}/messages`.
+
+
+## Validação de durabilidade
+
+A suíte versionada em `tests/test_durability.py` cobre a transição atômica de lease expirado para `retry` e impede que um checkpoint pendente de outra execução seja sobrescrito. Execute-a no ambiente Python do projeto com:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+```
+
+Para um ensaio operacional completo, suba o stack com `docker compose up -d`; o API e o worker só iniciam depois que `amp-migrate` termina com sucesso. Para restauração, use `scripts/restore-postgres.sh backup.dump`: o script interrompe API/worker durante `pg_restore` e os reinicia ao final. Depois, envie uma nova mensagem na mesma conversa e confirme a continuidade via `/v1/conversations/{id}/messages`.

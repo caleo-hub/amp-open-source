@@ -13,7 +13,6 @@ from .config import (
     JOB_LEASE_SECONDS,
     STATE_VERSION,
 )
-from .db import setup_langgraph
 from .graph import build_graph
 from .repositories import (
     claim_job,
@@ -78,12 +77,15 @@ def run_job(graph, job: dict) -> None:
     }
     snapshot = graph.get_state(config)
     snapshot_execution_id = None
-    if snapshot and snapshot.values:
-        snapshot_execution_id = snapshot.values.get("execution_id")
+    snapshot_values = (snapshot.values or {}) if snapshot else {}
+    if snapshot_values:
+        snapshot_execution_id = snapshot_values.get("execution_id")
     current_execution_id = str(job["execution_id"])
+    if snapshot and snapshot.next and snapshot_execution_id != current_execution_id:
+        raise RuntimeError("Checkpoint pendente de outra execução nesta conversa.")
     if snapshot and snapshot.next and snapshot_execution_id == current_execution_id:
         result = graph.invoke(None, config=config, durability="sync")
-    elif snapshot and snapshot.values.get("messages") and snapshot_execution_id == current_execution_id:
+    elif snapshot and snapshot_values.get("messages") and snapshot_execution_id == current_execution_id:
         result = snapshot.values
     else:
         result = graph.invoke(
@@ -117,8 +119,6 @@ def run_worker() -> None:
 
     signal.signal(signal.SIGTERM, stop_handler)
     signal.signal(signal.SIGINT, stop_handler)
-    setup_langgraph()
-
     from .config import database_settings
     dsn = database_settings().dsn("langgraph,public")
     with PostgresSaver.from_conn_string(dsn) as checkpointer:
