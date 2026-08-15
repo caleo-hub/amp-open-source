@@ -6,7 +6,7 @@ from .nodes import (
     router_node,
     should_use_tool,
     smart_node,
-    tool_node,
+    guarded_tool_node,
 )
 from .state import AgentState
 
@@ -16,7 +16,7 @@ def build_graph(checkpointer=None):
     builder.add_node("router", router_node)
     builder.add_node("fast", fast_node)
     builder.add_node("smart", smart_node)
-    builder.add_node("tools", tool_node)
+    builder.add_node("tools", guarded_tool_node)
     builder.add_edge(START, "router")
     builder.add_conditional_edges(
         "router",

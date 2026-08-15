@@ -252,8 +252,10 @@ def get_execution_input(execution_id: uuid.UUID) -> dict | None:
     with connection() as conn:
         row = conn.execute(
             """
-            SELECT e.conversation_id, m.id AS input_message_id, m.content
+            SELECT e.conversation_id, r.source, e.reply_channel,
+                   m.id AS input_message_id, m.content
             FROM amp.executions e
+            LEFT JOIN amp.inbound_requests r ON r.execution_id = e.id
             JOIN amp.messages m ON m.execution_id = e.id AND m.role = 'user'
             WHERE e.id = %s
             """,

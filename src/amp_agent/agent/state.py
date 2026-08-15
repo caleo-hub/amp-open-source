@@ -15,3 +15,5 @@ class AgentState(TypedDict, total=False):
     conversation_id: str
     input_message_id: str
     graph_version: str
+    channel: str
+    tool_policy: frozenset[str]

@@ -1,4 +1,4 @@
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import ToolNode
 
 from .models import (
@@ -13,6 +13,7 @@ from .prompts import (
 )
 from .state import AgentState, ModelProfile
 from ..tools import pesquisar_web, system_status
+from ..tools.policy import TOOL_REGISTRY, allowed_tool_names
 
 # -------------------------------------------------------------------
 # Modelos
@@ -36,6 +37,22 @@ smart_model = get_smart_model()
 tool_node = ToolNode(
     [system_status, pesquisar_web]
 )
+
+
+def guarded_tool_node(state: AgentState):
+    """Execute only tools explicitly allowed for the ingress channel."""
+    policy = state.get("tool_policy") or allowed_tool_names(state.get("channel"))
+    calls = getattr(state["messages"][-1], "tool_calls", [])
+    denied = [call for call in calls if call.get("name") not in policy]
+    if denied:
+        return {"messages": [
+            ToolMessage(
+                content="Essa ferramenta não está disponível neste canal.",
+                tool_call_id=call.get("id", "denied-tool"),
+            )
+            for call in denied
+        ]}
+    return tool_node.invoke(state)
 
 
 # -------------------------------------------------------------------
@@ -94,7 +111,11 @@ def fast_node(state: AgentState):
         "[model] FAST -> qwen3.5:2b-q4_K_M"
     )
 
-    response = fast_model.invoke(
+    policy = state.get("tool_policy") or allowed_tool_names(state.get("channel"))
+    model = get_fast_model().bind_tools(
+        [TOOL_REGISTRY[name] for name in policy if name in TOOL_REGISTRY]
+    )
+    response = model.invoke(
         [
             SystemMessage(
                 content=FAST_SYSTEM_PROMPT

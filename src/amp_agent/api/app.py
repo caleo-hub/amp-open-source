@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 from ..config.settings import (
     CHAT_WAIT_TIMEOUT_SECONDS,
     REPLY_CHANNELS,
-    VOICE_WAIT_TIMEOUT_SECONDS,
 )
 from ..persistence.repositories import (
     create_conversation,
@@ -74,7 +73,9 @@ class VoiceResponse(BaseModel):
     ok: bool
     speech: str
     execution_id: UUID | None = None
-    status: Literal["completed", "pending", "rejected", "failed"] = "completed"
+    status: Literal["accepted", "processing", "completed", "failed"] = "accepted"
+    conversation_id: UUID | None = None
+    request_id: str | None = None
 
 
 class ConversationCreate(BaseModel):
@@ -190,19 +191,6 @@ def enqueue_message(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
-def is_allowed_voice_command(text: str) -> bool:
-    return text.lower().strip() in {
-        "como está o servidor",
-        "como esta o servidor",
-        "status do servidor",
-        "qual o status do servidor",
-        "verifique o servidor",
-        "como está o amp",
-        "como esta o amp",
-        "status do amp",
-    }
 
 
 def validate_voice_security(request: VoiceRequest, api_key: str | None) -> None:
@@ -335,13 +323,6 @@ def voice(
     validate_voice_security(request, x_amp_voice_key)
     if request.source != "alexa":
         raise HTTPException(status_code=403, detail="Origem não permitida.")
-    if not is_allowed_voice_command(request.text):
-        return VoiceResponse(
-            ok=False,
-            status="rejected",
-            speech="Esse comando não está disponível pelo canal de voz.",
-        )
-
     existing = existing_execution_or_none("voice", request.request_id, idempotency_key or request.request_id)
     conversation_id = (
         existing["conversation_id"]
@@ -350,39 +331,40 @@ def voice(
     )
     result = enqueue_message(
         conversation_id=conversation_id,
-        content=(
-            "Verifique o estado atual da API AMP e do Ollama. "
-            "Informe de forma curta se estão disponíveis e quais modelos estão carregados."
-        ),
+        content=request.text.strip(),
         source="voice",
         request_id=request.request_id,
         idempotency_key=idempotency_key or request.request_id,
-        deadline_seconds=int(VOICE_WAIT_TIMEOUT_SECONDS),
+        deadline_seconds=None,
         reply_channel="alexa",
         priority=100,
     )
     execution = result["execution"]
-    final = wait_for_execution(execution["id"], VOICE_WAIT_TIMEOUT_SECONDS)
-    if not final or final["status"] in {"queued", "running"}:
-        return JSONResponse(
-            status_code=202,
-            content={
-                "ok": True,
-                "status": "pending",
-                "speech": "Solicitação recebida; a execução continua em andamento.",
-                "execution_id": str(execution["id"]),
-            },
-        )
-    if final["status"] != "succeeded":
-        return VoiceResponse(
-            ok=False,
-            status="failed",
-            speech="Não consegui concluir a consulta ao servidor AMP.",
-            execution_id=execution["id"],
-        )
-    return VoiceResponse(
-        ok=True,
-        status="completed",
-        speech=final["result"] or "",
-        execution_id=execution["id"],
-    )
+    return JSONResponse(status_code=202, content={
+        "ok": True,
+        "status": "accepted",
+        "speech": "Entendido. Estou processando isso.",
+        "execution_id": str(execution["id"]),
+        "conversation_id": str(execution["conversation_id"]),
+        "request_id": execution.get("request_id") or request.request_id,
+    })
+
+
+@app.get("/voice/executions/{execution_id}")
+def voice_execution(
+    execution_id: UUID,
+    x_amp_voice_key: str | None = Header(default=None),
+):
+    if not VOICE_API_KEY:
+        raise HTTPException(status_code=503, detail="Canal de voz não configurado.")
+    if x_amp_voice_key != VOICE_API_KEY:
+        raise HTTPException(status_code=401, detail="Não autorizado.")
+    row = get_execution(execution_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Execução não encontrada.")
+    status = row["status"]
+    if status in {"queued", "running"}:
+        return {"ok": True, "status": "processing", "speech": "Ainda estou processando sua solicitação.", "execution_id": str(execution_id)}
+    if status == "succeeded":
+        return {"ok": True, "status": "completed", "speech": row.get("result") or "", "execution_id": str(execution_id)}
+    return {"ok": False, "status": "failed", "speech": "Não consegui concluir essa solicitação.", "execution_id": str(execution_id)}

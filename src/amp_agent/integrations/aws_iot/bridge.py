@@ -38,6 +38,10 @@ AMP_VOICE_URL = os.getenv(
     "AMP_VOICE_URL",
     "http://127.0.0.1:8000/voice",
 )
+AMP_VOICE_RESULT_URL = os.getenv(
+    "AMP_VOICE_RESULT_URL",
+    AMP_VOICE_URL.rstrip("/") + "/executions",
+)
 
 VOICE_SECRET_PATH = os.getenv(
     "AMP_VOICE_SECRET_PATH",
@@ -107,7 +111,6 @@ def call_voice(
                 "O AMP recusou a solicitação."
             ),
         }
-
     except URLError:
         logger.exception(
             "Não foi possível acessar o AMP."
@@ -119,19 +122,25 @@ def call_voice(
                 "O servidor AMP está indisponível."
             ),
         }
-
     except Exception:
-        logger.exception(
-            "Erro inesperado ao chamar /voice."
-        )
+        logger.exception("Erro inesperado ao chamar /voice.")
+        return {"ok": False, "speech": "Ocorreu um erro ao acessar o AMP."}
 
-        return {
-            "ok": False,
-            "speech": (
-                "Ocorreu um erro ao acessar o AMP."
-            ),
-        }
 
+def call_voice_result(execution_id: str) -> dict:
+    """Read a persisted execution; this never waits for the worker."""
+    voice_key = load_voice_key()
+    request = Request(
+        AMP_VOICE_RESULT_URL.rstrip("/") + "/" + execution_id,
+        headers={"X-AMP-Voice-Key": voice_key},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=6) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, ValueError):
+        logger.exception("Não foi possível consultar a execução de voz")
+        return {"ok": False, "speech": "Não foi possível consultar a solicitação."}
 
 def publish_response(
     mqtt_connection,
@@ -143,6 +152,7 @@ def publish_response(
     payload = {
         "request_id": request_id,
         "ok": bool(response.get("ok")),
+        "status": response.get("status"),
         "speech": str(
             response.get(
                 "speech",
@@ -155,6 +165,8 @@ def publish_response(
 
     if execution_id:
         payload["execution_id"] = execution_id
+    if response.get("conversation_id"):
+        payload["conversation_id"] = response["conversation_id"]
 
     mqtt_connection.publish(
         topic=topic,
@@ -195,19 +207,22 @@ def on_message(
             command["request_id"]
         ).strip()
 
-        text = str(
-            command["text"]
-        ).strip()
-
         if not request_id:
             raise ValueError(
                 "request_id vazio"
             )
 
-        if not text:
-            raise ValueError(
-                "text vazio"
-            )
+        action = str(command.get("action", "submit")).strip().lower()
+        if action == "submit":
+            text = str(command["text"]).strip()
+            if not text:
+                raise ValueError("text vazio")
+        elif action == "result":
+            execution_id = str(command["execution_id"]).strip()
+            if not execution_id:
+                raise ValueError("execution_id vazio")
+        else:
+            raise ValueError("action inválida")
 
     except (
         json.JSONDecodeError,
@@ -225,9 +240,10 @@ def on_message(
         request_id,
     )
 
-    response = call_voice(
-        text=text,
-        request_id=request_id,
+    response = (
+        call_voice(text=text, request_id=request_id)
+        if action == "submit"
+        else call_voice_result(execution_id)
     )
 
     publish_response(

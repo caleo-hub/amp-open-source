@@ -22,6 +22,7 @@ from ..persistence.repositories import (
     heartbeat,
     run_retention,
 )
+from ..tools.policy import allowed_tool_names
 
 
 logger = logging.getLogger("amp-worker")
@@ -97,6 +98,8 @@ def run_job(graph, job: dict) -> None:
                 "conversation_id": str(job["conversation_id"]),
                 "input_message_id": str(input_data["input_message_id"]),
                 "graph_version": GRAPH_VERSION,
+                "channel": input_data.get("source") or "chat",
+                "tool_policy": allowed_tool_names(input_data.get("source")),
             },
             config=config,
             durability="sync",
