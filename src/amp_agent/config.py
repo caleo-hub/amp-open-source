@@ -61,3 +61,19 @@ JOB_MAX_ATTEMPTS = int(os.getenv("AMP_JOB_MAX_ATTEMPTS", "3"))
 CHAT_WAIT_TIMEOUT_SECONDS = float(os.getenv("AMP_CHAT_WAIT_TIMEOUT_SECONDS", "30"))
 VOICE_WAIT_TIMEOUT_SECONDS = float(os.getenv("AMP_VOICE_WAIT_TIMEOUT_SECONDS", "5"))
 REPLY_CHANNELS = frozenset({"alexa", "aws_iot"})
+SEARXNG_BASE_URL = os.getenv(
+    "SEARXNG_BASE_URL",
+    "http://127.0.0.1:8888",
+)
+
+WEB_SEARCH_TIMEOUT_SECONDS = float(
+    os.getenv("WEB_SEARCH_TIMEOUT_SECONDS", "8")
+)
+
+WEB_SEARCH_MAX_RESULTS = int(
+    os.getenv("WEB_SEARCH_MAX_RESULTS", "5")
+)
+
+WEB_SEARCH_MAX_SNIPPET_CHARS = int(
+    os.getenv("WEB_SEARCH_MAX_SNIPPET_CHARS", "500")
+)

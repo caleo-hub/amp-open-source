@@ -47,6 +47,10 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       OLLAMA_BASE_URL: "http://localhost:11434"
+      SEARXNG_BASE_URL: "http://127.0.0.1:8888"
+      WEB_SEARCH_TIMEOUT_SECONDS: "8"
+      WEB_SEARCH_MAX_RESULTS: "5"
+      WEB_SEARCH_MAX_SNIPPET_CHARS: "500"
       AMP_DB_HOST: "127.0.0.1"
       AMP_DB_PORT: "55432"
       AMP_DB_NAME: "amp"
@@ -73,6 +77,10 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       OLLAMA_BASE_URL: "http://localhost:11434"
+      SEARXNG_BASE_URL: "http://127.0.0.1:8888"
+      WEB_SEARCH_TIMEOUT_SECONDS: "8"
+      WEB_SEARCH_MAX_RESULTS: "5"
+      WEB_SEARCH_MAX_SNIPPET_CHARS: "500"
       AMP_DB_HOST: "127.0.0.1"
       AMP_DB_PORT: "55432"
       AMP_DB_NAME: "amp"
@@ -85,7 +93,14 @@ services:
         condition: service_healthy
       amp-migrate:
         condition: service_completed_successfully
-
+  amp-searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: amp-searxng
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
 volumes:
   amp_pgdata:
 

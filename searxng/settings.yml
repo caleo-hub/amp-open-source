@@ -1,0 +1,16 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "AMP Search"
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "5487c9129bd60d316b29a939089c85b7864603aef0b19d0e1f2faffd9245e37a"
+  limiter: false
+  image_proxy: false

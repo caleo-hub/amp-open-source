@@ -12,8 +12,7 @@ from .prompts import (
     SMART_SYSTEM_PROMPT,
 )
 from .state import AgentState, ModelProfile
-from .tools import system_status
-
+from .tools import pesquisar_web, system_status
 
 # -------------------------------------------------------------------
 # Modelos
@@ -23,7 +22,7 @@ router_model = get_router_model()
 
 # FAST possui acesso às ferramentas.
 fast_model = get_fast_model().bind_tools(
-    [system_status]
+    [system_status, pesquisar_web]
 )
 
 # SMART, por enquanto, fica somente como modelo de análise.
@@ -35,7 +34,7 @@ smart_model = get_smart_model()
 # -------------------------------------------------------------------
 
 tool_node = ToolNode(
-    [system_status]
+    [system_status, pesquisar_web]
 )
 
 
