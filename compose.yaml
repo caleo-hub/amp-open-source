@@ -59,6 +59,8 @@ services:
     depends_on:
       amp-db:
         condition: service_healthy
+      amp-migrate:
+        condition: service_completed_successfully
 
   amp-worker:
     build:
@@ -81,6 +83,8 @@ services:
     depends_on:
       amp-db:
         condition: service_healthy
+      amp-migrate:
+        condition: service_completed_successfully
 
 volumes:
   amp_pgdata:
