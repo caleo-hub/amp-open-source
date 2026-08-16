@@ -1,3 +1,5 @@
+import base64
+import json
 import logging
 import os
 import time
@@ -6,8 +8,10 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
+from urllib.request import urlopen
+from urllib.error import URLError
 from pydantic import BaseModel, Field
 
 from ..config.settings import (
@@ -21,10 +25,19 @@ from ..persistence.repositories import (
     get_execution,
     list_messages,
     find_existing_execution,
+    get_default_workspace,
+    list_executions,
+    list_execution_events,
 )
+from ..persistence.db import connection
+from ..persistence.runtime import request_cancel
+from ..observability import configure_json_logging
+from ..config.settings import HEALTH_CACHE_SECONDS, SEARXNG_BASE_URL, WORKER_STALE_SECONDS
+from ..agent.models import FAST_MODEL, SMART_MODEL, OLLAMA_BASE_URL
 
 
 logger = logging.getLogger(__name__)
+configure_json_logging()
 app = FastAPI(
     title="AMP Agent API",
     description="API local para executar o agente AMP",
@@ -104,6 +117,25 @@ class ExecutionResponse(BaseModel):
     created_at: datetime | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    workspace_id: UUID | None = None
+    agent_id: UUID | None = None
+    agent_version_id: UUID | None = None
+    root_execution_id: UUID | None = None
+    parent_execution_id: UUID | None = None
+    cancel_requested_at: datetime | None = None
+    cancel_effective_at: datetime | None = None
+    effective_deadline_at: datetime | None = None
+    max_steps: int | None = None
+    used_steps: int | None = None
+    max_tool_calls: int | None = None
+    used_tool_calls: int | None = None
+    error_fingerprint: str | None = None
+    error_retryable: bool | None = None
+    cancel_requested: bool = False
+
+
+class CancelRequest(BaseModel):
+    reason: Literal["user_requested", "operator_requested"] = "user_requested"
 
 
 class AcceptedResponse(BaseModel):
@@ -133,18 +165,20 @@ def validate_reply_channel(reply_channel: str | None) -> None:
 
 def serialize_execution(row: dict) -> dict:
     return {
-        "execution_id": row["id"],
-        "conversation_id": row["conversation_id"],
-        "request_id": row.get("request_id"),
-        "status": row["status"],
-        "job_status": row.get("job_status"),
-        "result": row.get("result"),
+        "execution_id": row["id"], "conversation_id": row["conversation_id"],
+        "workspace_id": row.get("workspace_id"), "agent_id": row.get("agent_id"),
+        "agent_version_id": row.get("agent_version_id"), "root_execution_id": row.get("root_execution_id"),
+        "parent_execution_id": row.get("parent_execution_id"), "request_id": row.get("request_id"),
+        "status": row["status"], "job_status": row.get("job_status"), "result": row.get("result"),
         "error_code": row.get("error_code") or row.get("last_error_code"),
         "error_message": row.get("error_message") or row.get("last_error"),
-        "attempts": row.get("attempts"),
-        "created_at": row.get("created_at"),
-        "started_at": row.get("started_at"),
-        "completed_at": row.get("completed_at"),
+        "error_fingerprint": row.get("error_fingerprint"), "error_retryable": row.get("error_retryable"),
+        "attempts": row.get("attempts"), "created_at": row.get("created_at"),
+        "started_at": row.get("started_at"), "completed_at": row.get("completed_at"),
+        "cancel_requested_at": row.get("cancel_requested_at"), "cancel_effective_at": row.get("cancel_effective_at"),
+        "effective_deadline_at": row.get("effective_deadline_at"), "max_steps": row.get("max_steps"),
+        "used_steps": row.get("used_steps"), "max_tool_calls": row.get("max_tool_calls"),
+        "used_tool_calls": row.get("used_tool_calls"), "cancel_requested": bool(row.get("cancel_requested_at")),
     }
 
 
@@ -208,6 +242,61 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
+_health_cache: tuple[float, dict] | None = None
+
+
+def _health_check(name: str, check) -> dict:
+    started = time.monotonic()
+    try:
+        detail = check()
+        return {"status": "up", "duration_ms": round((time.monotonic() - started) * 1000, 2), **(detail or {})}
+    except Exception as exc:
+        return {"status": "down", "duration_ms": round((time.monotonic() - started) * 1000, 2), "error_code": f"{name}_unavailable", "error_class": type(exc).__name__}
+
+
+def _ready_snapshot() -> dict:
+    global _health_cache
+    now = time.monotonic()
+    if _health_cache and now - _health_cache[0] < HEALTH_CACHE_SECONDS:
+        return _health_cache[1]
+    def postgres():
+        with connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return {}
+    def worker():
+        with connection() as conn:
+            row = conn.execute("SELECT worker_id, last_seen_at FROM amp.worker_instances ORDER BY last_seen_at DESC LIMIT 1").fetchone()
+        if not row or (datetime.now(timezone.utc) - row["last_seen_at"]).total_seconds() > WORKER_STALE_SECONDS:
+            raise RuntimeError("worker_stale")
+        return {"worker_id": row["worker_id"]}
+    def ollama():
+        with urlopen(f"{OLLAMA_BASE_URL}/api/tags", timeout=2) as response:
+            payload = json.loads(response.read())
+        models = {item.get("name") for item in payload.get("models", []) if isinstance(item, dict)}
+        missing = sorted({FAST_MODEL, SMART_MODEL} - models)
+        if missing: raise RuntimeError("models_missing")
+        return {"models": sorted(models)}
+    def searxng():
+        with urlopen(f"{SEARXNG_BASE_URL.rstrip('/')}/config", timeout=2) as response:
+            if response.status >= 400: raise RuntimeError("searxng_http")
+        return {}
+    checks = {name: _health_check(name, check) for name, check in (("postgres", postgres), ("worker", worker), ("ollama", ollama), ("searxng", searxng))}
+    snapshot = {"status": "ok" if all(item["status"] == "up" for item in checks.values()) else "degraded", "checks": checks, "checked_at": datetime.now(timezone.utc).isoformat()}
+    _health_cache = (now, snapshot)
+    return snapshot
+
+
+@app.get("/health/live")
+def health_live():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    snapshot = _ready_snapshot()
+    return JSONResponse(status_code=200 if snapshot["status"] == "ok" else 503, content=snapshot)
+
+
 @app.post("/v1/conversations", status_code=201)
 def create_conversation_endpoint(request: ConversationCreate):
     return create_conversation(request.channel)
@@ -246,6 +335,42 @@ def execution_endpoint(execution_id: UUID):
     if not row:
         raise HTTPException(status_code=404, detail="Execução não encontrada.")
     return serialize_execution(row)
+
+
+@app.get("/v1/executions")
+def executions_endpoint(workspace_id: UUID | None = None, status: str | None = None, limit: int = Query(default=50, ge=1, le=100), cursor: str | None = None):
+    workspace = workspace_id or (get_default_workspace() or {}).get("id")
+    if not workspace: raise HTTPException(status_code=503, detail="Workspace bootstrap indisponível.")
+    before_created = before_id = None
+    if cursor:
+        try:
+            decoded = json.loads(base64.urlsafe_b64decode(cursor.encode() + b"=" * (-len(cursor) % 4)))
+            if decoded.get("v") != 1 or decoded.get("workspace_id") != str(workspace) or decoded.get("status") != status: raise ValueError
+            before_created = datetime.fromisoformat(decoded["created_at"]); before_id = UUID(decoded["id"])
+        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            raise HTTPException(status_code=422, detail="Cursor inválido.")
+    rows = list_executions(workspace, status, limit + 1, before_created, before_id)
+    has_more = len(rows) > limit; rows = rows[:limit]
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        raw = {"v": 1, "workspace_id": str(workspace), "status": status, "created_at": last["created_at"].isoformat(), "id": str(last["id"])}
+        next_cursor = base64.urlsafe_b64encode(json.dumps(raw, separators=(",", ":")).encode()).decode().rstrip("=")
+    return {"items": [serialize_execution(row) for row in rows], "next_cursor": next_cursor, "has_more": has_more}
+
+
+@app.get("/v1/executions/{execution_id}/events")
+def execution_events_endpoint(execution_id: UUID, after_sequence: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=500)):
+    if not get_execution(execution_id): raise HTTPException(status_code=404, detail="Execução não encontrada.")
+    return list_execution_events(execution_id, after_sequence, limit)
+
+
+@app.post("/v1/executions/{execution_id}/cancel")
+def cancel_execution_endpoint(execution_id: UUID, request: CancelRequest | None = None):
+    result = request_cancel(execution_id, (request or CancelRequest()).reason, {"type": "api"})
+    if not result.get("found"): raise HTTPException(status_code=404, detail="Execução não encontrada.")
+    status_code = 202 if result.get("cancel_requested") else 200
+    return JSONResponse(status_code=status_code, content={"execution_id": str(execution_id), **result})
 
 
 @app.get("/v1/conversations/{conversation_id}/messages")

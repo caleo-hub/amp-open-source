@@ -1,7 +1,14 @@
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   amp-db:
     image: postgres:16-alpine
     container_name: amp-db
+    logging: *default-logging
     restart: unless-stopped
     environment:
       POSTGRES_DB: amp
@@ -42,10 +49,18 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: amp-api
+    logging: *default-logging
     network_mode: host
     restart: unless-stopped
     environment:
       PYTHONUNBUFFERED: "1"
+      AMP_RUNTIME_MAX_SECONDS: "120"
+      AMP_RUNTIME_MAX_STEPS: "12"
+      AMP_RUNTIME_MAX_TOOL_CALLS: "4"
+      AMP_RUNTIME_MODEL_TIMEOUT_SECONDS: "45"
+      AMP_RUNTIME_TOOL_TIMEOUT_SECONDS: "10"
+      AMP_HISTORY_MAX_MESSAGES: "20"
+      AMP_HISTORY_MAX_ESTIMATED_TOKENS: "6000"
       OLLAMA_BASE_URL: "http://localhost:11434"
       SEARXNG_BASE_URL: "http://127.0.0.1:8888"
       WEB_SEARCH_TIMEOUT_SECONDS: "8"
@@ -60,6 +75,11 @@ services:
       - postgres_password
       - source: amp_voice_api_key
         target: amp_voice_api_key
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     depends_on:
       amp-db:
         condition: service_healthy
@@ -71,11 +91,19 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: amp-worker
+    logging: *default-logging
     network_mode: host
     restart: unless-stopped
     command: ["python", "-m", "amp_agent.worker.runner"]
     environment:
       PYTHONUNBUFFERED: "1"
+      AMP_RUNTIME_MAX_SECONDS: "120"
+      AMP_RUNTIME_MAX_STEPS: "12"
+      AMP_RUNTIME_MAX_TOOL_CALLS: "4"
+      AMP_RUNTIME_MODEL_TIMEOUT_SECONDS: "45"
+      AMP_RUNTIME_TOOL_TIMEOUT_SECONDS: "10"
+      AMP_HISTORY_MAX_MESSAGES: "20"
+      AMP_HISTORY_MAX_ESTIMATED_TOKENS: "6000"
       OLLAMA_BASE_URL: "http://localhost:11434"
       SEARXNG_BASE_URL: "http://127.0.0.1:8888"
       WEB_SEARCH_TIMEOUT_SECONDS: "8"
@@ -88,6 +116,11 @@ services:
       AMP_DB_PASSWORD_FILE: /run/secrets/postgres_password
     secrets:
       - postgres_password
+    healthcheck:
+      test: ["CMD", "python", "-m", "amp_agent.worker.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     depends_on:
       amp-db:
         condition: service_healthy
@@ -99,6 +132,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: amp-iot-bridge
+    logging: *default-logging
     network_mode: host
     restart: unless-stopped
     command: ["python", "-m", "amp_agent.integrations.aws_iot.bridge"]
@@ -122,12 +156,18 @@ services:
       - amp_voice_api_key
     depends_on:
       amp-api:
-        condition: service_started
+        condition: service_healthy
 
   amp-searxng:
     image: docker.io/searxng/searxng:latest
     container_name: amp-searxng
+    logging: *default-logging
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/config >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     env_file:
       - ./secrets/searxng.env
     ports:
