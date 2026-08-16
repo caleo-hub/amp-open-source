@@ -9,6 +9,7 @@ from ..config.settings import (
     WEB_SEARCH_MAX_RESULTS,
     WEB_SEARCH_MAX_SNIPPET_CHARS,
     WEB_SEARCH_TIMEOUT_SECONDS,
+    RUNTIME_TOOL_TIMEOUT_SECONDS,
 )
 
 
@@ -34,7 +35,7 @@ def search_web(query: str) -> dict:
                 "q": query,
                 "format": "json",
             },
-            timeout=WEB_SEARCH_TIMEOUT_SECONDS,
+            timeout=min(WEB_SEARCH_TIMEOUT_SECONDS, RUNTIME_TOOL_TIMEOUT_SECONDS),
         )
 
         response.raise_for_status()

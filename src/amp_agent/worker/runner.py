@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import signal
 import threading
@@ -7,152 +9,104 @@ import uuid
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.postgres import PostgresSaver
 
-from ..config.settings import (
-    GRAPH_VERSION,
-    JOB_HEARTBEAT_SECONDS,
-    JOB_LEASE_SECONDS,
-    STATE_VERSION,
-)
+from ..config.settings import (GRAPH_VERSION, JOB_HEARTBEAT_SECONDS, JOB_LEASE_SECONDS, STATE_VERSION, RUNTIME_MAX_STEPS, AMP_AGENT_VERSION)
 from ..agent.graph import build_graph
-from ..persistence.repositories import (
-    claim_job,
-    complete_job,
-    fail_job,
-    get_execution_input,
-    heartbeat,
-    run_retention,
-)
+from ..agent.history import build_history
+from ..observability import configure_json_logging, log_event
+from ..persistence.repositories import claim_job, complete_job, fail_job, get_execution_input, heartbeat, run_retention
+from ..persistence.checkpoints import delete_terminal_threads
+from ..persistence.runtime import (ExecutionCancelled, RuntimeControlError, RuntimeLimitExceeded, assert_execution_active, effective_cancel, heartbeat_worker, register_worker)
 from ..tools.policy import allowed_tool_names
-
 
 logger = logging.getLogger("amp-worker")
 
 
-def _safe_failure_message(exc: Exception) -> str:
-    """Return a diagnostic that cannot include credentials or prompt content."""
-    return f"{type(exc).__name__}: falha durante a execução do worker."
+def _safe_failure_message(exc: Exception, code: str = "worker_error") -> str:
+    return f"{code}: falha durante a execução do worker."
 
 
 class Heartbeat:
     def __init__(self, job: dict):
-        self.job = job
-        self.stop_event = threading.Event()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.valid = True
-
-    def start(self) -> None:
-        self.thread.start()
-
+        self.job = job; self.stop_event = threading.Event(); self.thread = threading.Thread(target=self._run, daemon=True); self.valid = True
+    def start(self) -> None: self.thread.start()
     def _run(self) -> None:
         while not self.stop_event.wait(JOB_HEARTBEAT_SECONDS):
-            self.valid = heartbeat(
-                self.job["id"],
-                self.job["lease_token"],
-                JOB_LEASE_SECONDS,
-            )
+            self.valid = heartbeat(self.job["id"], self.job["lease_token"], JOB_LEASE_SECONDS)
             if not self.valid:
-                logger.warning("Lease perdido para job %s", self.job["id"])
-                return
-
+                logger.warning("worker.lease_lost", extra={"amp_context": {"execution_id": str(self.job["execution_id"]), "job_id": str(self.job["id"])}}); return
     def stop(self) -> None:
-        self.stop_event.set()
-        self.thread.join(timeout=2)
+        self.stop_event.set(); self.thread.join(timeout=2)
 
 
 def _last_content(state: dict) -> str:
     messages = state.get("messages", []) if state else []
-    if not messages:
-        return ""
-    return str(getattr(messages[-1], "content", messages[-1]))
+    return str(getattr(messages[-1], "content", messages[-1])) if messages else ""
 
 
 def run_job(graph, job: dict) -> None:
     input_data = get_execution_input(job["execution_id"])
-    if not input_data:
-        raise RuntimeError("Mensagem de entrada não encontrada.")
-
-    config = {
-        "configurable": {
-            "thread_id": str(job["conversation_id"]),
-        }
-    }
+    if not input_data: raise RuntimeError("Mensagem de entrada não encontrada.")
+    execution_id = uuid.UUID(str(job["execution_id"]))
+    if job.get("lease_token"):
+        assert_execution_active(execution_id, job.get("lease_token"))
+    config = {"configurable": {"thread_id": str(input_data.get("checkpoint_thread_id") or job["conversation_id"])}, "recursion_limit": RUNTIME_MAX_STEPS * 2}
     snapshot = graph.get_state(config)
-    snapshot_execution_id = None
     snapshot_values = (snapshot.values or {}) if snapshot else {}
-    if snapshot_values:
-        snapshot_execution_id = snapshot_values.get("execution_id")
-    current_execution_id = str(job["execution_id"])
-    if snapshot and snapshot.next and snapshot_execution_id != current_execution_id:
+    snapshot_execution_id = snapshot_values.get("execution_id") if snapshot_values else None
+    if snapshot and snapshot.next and str(snapshot_execution_id) != str(execution_id):
         raise RuntimeError("Checkpoint pendente de outra execução nesta conversa.")
-    if snapshot and snapshot.next and snapshot_execution_id == current_execution_id:
+    if snapshot and snapshot.next and str(snapshot_execution_id) == str(execution_id):
         result = graph.invoke(None, config=config, durability="sync")
-    elif snapshot and snapshot_values.get("messages") and snapshot_execution_id == current_execution_id:
-        result = snapshot.values
     else:
-        result = graph.invoke(
-            {
-                "messages": [HumanMessage(content=input_data["content"])],
-                "profile": "fast",
-                "state_version": STATE_VERSION,
-                "execution_id": str(job["execution_id"]),
-                "conversation_id": str(job["conversation_id"]),
-                "input_message_id": str(input_data["input_message_id"]),
-                "graph_version": GRAPH_VERSION,
-                "channel": input_data.get("source") or "chat",
-                "tool_policy": allowed_tool_names(input_data.get("source")),
-            },
-            config=config,
-            durability="sync",
-        )
-
-    if not _last_content(result):
-        raise RuntimeError("O grafo terminou sem uma resposta textual.")
-    if not complete_job(job, _last_content(result)):
-        raise RuntimeError("Lease inválido ao finalizar o job.")
+        history, history_meta = build_history(uuid.UUID(str(job["conversation_id"])), input_data["sequence_no"], input_data.get("history_max_messages") or 20, input_data.get("history_max_estimated_tokens") or 6000)
+        if not history or getattr(history[-1], "content", None) != input_data["content"]:
+            history.append(HumanMessage(content=input_data["content"]))
+        initial = {"messages": history, "profile": "fast", "state_version": STATE_VERSION, "execution_id": str(execution_id), "conversation_id": str(job["conversation_id"]), "input_message_id": str(input_data["input_message_id"]), "graph_version": GRAPH_VERSION, "channel": input_data.get("source") or "chat", "tool_policy": allowed_tool_names(input_data.get("source")), **history_meta}
+        result = graph.invoke(initial, config=config, durability="sync")
+    if job.get("lease_token"):
+        assert_execution_active(execution_id, job.get("lease_token"))
+    content = _last_content(result)
+    if not content: raise RuntimeError("O grafo terminou sem uma resposta textual.")
+    if not complete_job(job, content): raise RuntimeControlError("stale")
 
 
 def run_worker() -> None:
-    worker_id = f"worker-{uuid.uuid4()}"
-    stop_event = threading.Event()
-    last_retention = 0.0
-
+    worker_id = f"worker-{uuid.uuid4()}"; boot_id = uuid.uuid4(); stop_event = threading.Event(); last_retention = 0.0
+    configure_json_logging()
+    register_worker(worker_id, boot_id, AMP_AGENT_VERSION, "starting")
     def stop_handler(signum, frame):
-        del signum, frame
-        stop_event.set()
-
-    signal.signal(signal.SIGTERM, stop_handler)
-    signal.signal(signal.SIGINT, stop_handler)
+        del signum, frame; stop_event.set()
+    signal.signal(signal.SIGTERM, stop_handler); signal.signal(signal.SIGINT, stop_handler)
     from ..config.settings import database_settings
     dsn = database_settings().dsn("langgraph,public")
     with PostgresSaver.from_conn_string(dsn) as checkpointer:
         graph = build_graph(checkpointer)
         while not stop_event.is_set():
+            heartbeat_worker(worker_id, "idle")
             if time.monotonic() - last_retention > 3600:
                 try:
-                    run_retention()
-                except Exception:
-                    logger.exception("Falha na retenção periódica")
+                    run_retention(); delete_terminal_threads(checkpointer)
+                except Exception: logger.exception("retention.failed")
                 last_retention = time.monotonic()
-
             job = claim_job(worker_id, JOB_LEASE_SECONDS)
             if not job:
-                stop_event.wait(1)
-                continue
-
-            heartbeat_handle = Heartbeat(job)
-            heartbeat_handle.start()
+                stop_event.wait(1); continue
+            heartbeat_worker(worker_id, "running", job["id"]); heartbeat_handle = Heartbeat(job); heartbeat_handle.start()
             try:
                 run_job(graph, job)
+            except ExecutionCancelled:
+                effective_cancel(job)
+            except RuntimeLimitExceeded as exc:
+                fail_job(job, exc.code, _safe_failure_message(exc, exc.code), 0, retryable=False)
+            except RuntimeControlError:
+                pass
             except Exception as exc:
-                # Do not log exception text: database/HTTP errors can contain
-                # DSNs, passwords, prompts, or provider responses.
-                logger.error("Falha no job %s (%s)", job["id"], type(exc).__name__)
+                logger.error("execution.failed", extra={"amp_context": {"execution_id": str(job["execution_id"]), "attempt_no": job.get("attempts"), "error_class": type(exc).__name__}})
                 delay = min(300.0, 5.0 * (2 ** max(job["attempts"] - 1, 0)))
-                fail_job(job, "worker_error", _safe_failure_message(exc), delay)
+                fail_job(job, "worker_error", _safe_failure_message(exc), delay, retryable=True)
             finally:
-                heartbeat_handle.stop()
-
+                heartbeat_handle.stop(); heartbeat_worker(worker_id, "idle")
+    heartbeat_worker(worker_id, "stopped")
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     run_worker()
