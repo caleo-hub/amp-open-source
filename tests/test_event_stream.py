@@ -10,6 +10,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 api_module = importlib.import_module("amp_agent.api.app")
+chat_module = importlib.import_module("amp_agent.api.chat")
 
 
 class EventStreamTests(unittest.TestCase):
@@ -56,6 +57,21 @@ class EventStreamTests(unittest.TestCase):
             )
         self.assertEqual(chunks, [])
         list_events.assert_called_once_with(execution_id, 12, 100)
+
+    def test_event_stream_accepts_paged_event_repository_response(self):
+        execution_id = uuid4()
+        event = {"sequence_no": 9, "event_name": "execution.succeeded", "execution_id": execution_id}
+        with (
+            patch.object(api_module, "list_execution_events", return_value={"items": [event]}),
+            patch.object(api_module, "get_execution", return_value={"status": "succeeded"}),
+        ):
+            chunks = asyncio.run(anext_collect(api_module._execution_event_stream(execution_id, 0)))
+        self.assertIn("id: 9", chunks[0])
+
+    def test_interrupt_decisions_are_distinct(self):
+        self.assertEqual(chat_module._resume_decision(True), {"type": "approve"})
+        self.assertEqual(chat_module._resume_decision(False), {"type": "reject"})
+        self.assertEqual(chat_module._resume_decision({"note_key": "x"}), {"type": "edit", "arguments": {"note_key": "x"}})
 
 
 async def anext_collect(stream):

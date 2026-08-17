@@ -74,11 +74,11 @@ def create_conversation(channel: str, conversation_id: uuid.UUID | None = None) 
         workspace_id = conn.execute("SELECT id FROM amp.workspaces WHERE workspace_key = 'local'").fetchone()["id"]
         row = conn.execute(
             """
-            INSERT INTO amp.conversations(id, workspace_id, agent_id, channel)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id, workspace_id, agent_id, channel, status, created_at, updated_at
+            INSERT INTO amp.conversations(id, workspace_id, agent_id, channel, title, last_message_at)
+            VALUES (%s, %s, %s, %s, %s, now())
+            RETURNING id, workspace_id, agent_id, channel, title, status, archived_at, created_at, updated_at, last_message_at
             """,
-            (conversation_id, workspace_id, agent_id, channel),
+            (conversation_id, workspace_id, agent_id, channel, "Nova conversa"),
         ).fetchone()
         conn.commit()
         return dict(row)
@@ -88,7 +88,7 @@ def get_conversation(conversation_id: uuid.UUID) -> dict | None:
     with connection() as conn:
         row = conn.execute(
             """
-            SELECT id, channel, status, created_at, updated_at, closed_at
+            SELECT id, channel, status, title, archived_at, created_at, updated_at, last_message_at, closed_at
             FROM amp.conversations WHERE id = %s
             """,
             (conversation_id,),
@@ -200,7 +200,7 @@ def enqueue_execution(
                 execution_id, conversation_id, conversation["workspace_id"], inbound_id,
                 conversation["agent_id"], version_row["id"], AMP_AGENT_KEY, AMP_AGENT_VERSION,
                 GRAPH_VERSION, STATE_VERSION, "fast", reply_channel, execution_id,
-                "inbound_request", str(inbound_id), uuid.uuid4(), uuid.uuid4(),
+                "inbound_request", str(inbound_id), conversation_id, uuid.uuid4(),
                 requested_deadline, effective_deadline, RUNTIME_POLICY_VERSION,
                 RETRY_POLICY_VERSION, HISTORY_POLICY_VERSION, RUNTIME_MAX_STEPS,
                 RUNTIME_MAX_TOOL_CALLS, RUNTIME_MODEL_TIMEOUT_SECONDS,
@@ -234,7 +234,7 @@ def enqueue_execution(
         )
         _event(conn, execution_id, "execution.queued", {"source": source})
         conn.execute(
-            "UPDATE amp.conversations SET updated_at = now() WHERE id = %s",
+            "UPDATE amp.conversations SET updated_at = now(), last_message_at = now() WHERE id = %s",
             (conversation_id,),
         )
         conn.commit()

@@ -55,12 +55,14 @@ configure_telemetry("amp-api")
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Keep native LangGraph persistence handles available to the API."""
+    from ..agent.graph import build_graph
     dsn = database_settings().dsn("langgraph,public")
     async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer, AsyncPostgresStore.from_conn_string(dsn) as store:
         await checkpointer.setup()
         await store.setup()
         application.state.langgraph_checkpointer = checkpointer
         application.state.langgraph_store = store
+        application.state.langgraph_graph = build_graph(checkpointer, store)
         yield
 
 
@@ -71,6 +73,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 instrument_fastapi(app)
+from .chat import router as chat_router
+app.include_router(chat_router)
 
 
 @app.middleware("http")
@@ -424,7 +428,8 @@ def execution_events_endpoint(execution_id: UUID, after_sequence: int = Query(de
 async def _execution_event_stream(execution_id: UUID, after_sequence: int):
     cursor = after_sequence
     while True:
-        rows = list_execution_events(execution_id, cursor, 100)
+        page = list_execution_events(execution_id, cursor, 100)
+        rows = page["items"] if isinstance(page, dict) else page
         for row in rows:
             cursor = int(row["sequence_no"])
             payload = json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":"))

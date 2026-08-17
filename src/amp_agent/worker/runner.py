@@ -9,6 +9,7 @@ import time
 import uuid
 
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres import AsyncPostgresStore
 
@@ -18,6 +19,7 @@ from ..agent.history import build_history
 from ..observability import bind_context, configure_json_logging, configure_telemetry, execution_span, log_event
 from ..persistence.repositories import claim_job, complete_job, fail_job, get_execution_input, heartbeat, run_retention
 from ..persistence.checkpoints import delete_terminal_threads_async
+from ..persistence.chat import pending_approval_decision
 from ..persistence.runtime import (ExecutionCancelled, RuntimeControlError, RuntimeLimitExceeded, assert_execution_active, effective_cancel, heartbeat_worker, record_event, register_worker)
 from ..tools.policy import allowed_tool_names
 
@@ -63,19 +65,16 @@ async def _stream_graph(graph, input_data, config: dict, execution_id: uuid.UUID
         if event.get("type") != "event":
             continue
         method = event.get("method")
-        if method not in {"values", "updates", "custom", "interrupts", "debug"}:
+        if method not in {"values", "updates", "custom", "interrupts", "debug", "messages", "messages-tuple", "tasks", "checkpoints", "events", "subgraphs"}:
             continue
         params = event.get("params") or {}
         namespace = params.get("namespace") or []
-        record_event(
-            execution_id,
-            f"stream.{method}",
-            metadata={
-                "sequence": event.get("seq"),
-                "namespace": list(namespace),
-            },
-            outcome="observed",
-        )
+        metadata = {"sequence": event.get("seq"), "namespace": list(namespace)}
+        if event.get("data") is not None:
+            metadata["data"] = event.get("data")
+        if params and set(params) != {"namespace"}:
+            metadata["params"] = params
+        record_event(execution_id, f"stream.{method}", metadata=metadata, outcome="observed")
     output = stream.output()
     if inspect.isawaitable(output):
         output = await output
@@ -95,7 +94,24 @@ async def run_job(graph, job: dict) -> None:
     if snapshot and snapshot.next and str(snapshot_execution_id) != str(execution_id):
         raise RuntimeError("Checkpoint pendente de outra execução nesta conversa.")
     if snapshot and snapshot.next and str(snapshot_execution_id) == str(execution_id):
-        result = await _stream_graph(graph, None, config, execution_id)
+        approval = pending_approval_decision(execution_id)
+        result = await _stream_graph(graph, Command(resume=(approval or {}).get("decision")), config, execution_id)
+    elif snapshot and snapshot_values.get("messages"):
+        # The checkpoint is the canonical transcript for subsequent turns.
+        # amp.messages remains a compatibility projection for legacy adapters.
+        initial = {
+            "messages": [HumanMessage(content=input_data["content"])],
+            "execution_id": str(execution_id),
+            "conversation_id": str(job["conversation_id"]),
+            "workspace_id": str(input_data["workspace_id"]),
+            "input_message_id": str(input_data["input_message_id"]),
+            "graph_version": GRAPH_VERSION,
+            "state_version": STATE_VERSION,
+            "profile": "fast",
+            "channel": input_data.get("source") or "chat",
+            "tool_policy": allowed_tool_names(input_data.get("source")),
+        }
+        result = await _stream_graph(graph, initial, config, execution_id)
     else:
         history, history_meta = build_history(uuid.UUID(str(job["conversation_id"])), input_data["sequence_no"], input_data.get("history_max_messages") or 20, input_data.get("history_max_estimated_tokens") or 6000)
         if not history or getattr(history[-1], "content", None) != input_data["content"]:
@@ -104,6 +120,11 @@ async def run_job(graph, job: dict) -> None:
         result = await _stream_graph(graph, initial, config, execution_id)
     if job.get("lease_token"):
         assert_execution_active(execution_id, job.get("lease_token"))
+    snapshot = await graph.aget_state(config)
+    if snapshot and snapshot.next:
+        from ..persistence.runtime import mark_waiting_approval
+        mark_waiting_approval(job)
+        return
     content = _last_content(result)
     if not content: raise RuntimeError("O grafo terminou sem uma resposta textual.")
     if len(content) > RUNTIME_MAX_OUTPUT_CHARS:
