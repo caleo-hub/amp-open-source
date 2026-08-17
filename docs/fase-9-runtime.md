@@ -28,10 +28,28 @@ resultado, erro seguro, tokens e metadata sanitizada. O span da execução é a
 raiz; nós, modelos e ferramentas são filhos. Conteúdo de prompts, respostas,
 argumentos e resultados nunca entra na telemetria.
 
+Logs JSON recebem automaticamente o contexto corrente por `ContextVar`.
+OpenTelemetry é opcional e no-op por padrão. Quando `OTEL_ENABLED=true`, API e
+worker exportam spans OTLP para `OTEL_EXPORTER_OTLP_ENDPOINT`; FastAPI, HTTPX e
+Psycopg são instrumentados automaticamente. Logs incluem `trace_id` e `span_id`
+somente quando há span válido, e o exportador nunca recebe conteúdo de prompts,
+respostas, argumentos ou resultados de ferramentas.
+Requisições usam `X-Request-ID` recebido ou gerado pela API; o mesmo valor volta
+no response header. O worker vincula `execution_id`, `thread_id`, `run_id`,
+`assistant_id`, `job_id` e `worker_id` enquanto processa o job. Contextos são
+restaurados ao terminar cada request/job para impedir correlação acidental entre
+execuções concorrentes.
+
 Catálogo inicial: `execution.queued`, `execution.started`,
 `execution.succeeded`, `execution.failed`, `execution.cancel_requested`,
 `execution.cancelled`, `execution.limit_exceeded`, `node.*`, `model.*`,
 `tool.*`, `job.retry_scheduled`, `job.lease_expired` e `worker.lease_lost`.
+
+O worker executa o grafo por `graph.stream_events(..., version="v3")` e
+persiste somente metadados seguros das projeções `values`, `updates`, `custom`,
+`interrupts` e `debug`. A API também oferece
+`GET /v1/executions/{id}/events/stream`, usando `sequence_no` como ID SSE e
+`Last-Event-ID` para reconexão.
 
 Categorias `lifecycle` e `control` permanecem enquanto a execução existir;
 `diagnostic` permanece 90 dias; `audit` fica reservada para a Fase 14.

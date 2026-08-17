@@ -33,6 +33,10 @@ services:
     command: ["python", "-m", "amp_agent.persistence.migrations_runner"]
     environment:
       PYTHONUNBUFFERED: "1"
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "amp-api"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      AMP_ENVIRONMENT: "local"
       AMP_DB_HOST: amp-db
       AMP_DB_PORT: "5432"
       AMP_DB_NAME: amp
@@ -54,6 +58,10 @@ services:
     restart: unless-stopped
     environment:
       PYTHONUNBUFFERED: "1"
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "amp-worker"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
+      AMP_ENVIRONMENT: "local"
       AMP_RUNTIME_MAX_SECONDS: "120"
       AMP_RUNTIME_MAX_STEPS: "12"
       AMP_RUNTIME_MAX_TOOL_CALLS: "4"

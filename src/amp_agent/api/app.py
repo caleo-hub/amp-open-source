@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import json
 import logging
 import os
@@ -8,8 +9,8 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from urllib.request import urlopen
 from urllib.error import URLError
 from pydantic import BaseModel, Field
@@ -31,18 +32,41 @@ from ..persistence.repositories import (
 )
 from ..persistence.db import connection
 from ..persistence.runtime import request_cancel
-from ..observability import configure_json_logging
+from ..observability import (
+    bind_context,
+    configure_json_logging,
+    configure_telemetry,
+    instrument_fastapi,
+    log_event,
+)
 from ..config.settings import HEALTH_CACHE_SECONDS, SEARXNG_BASE_URL, WORKER_STALE_SECONDS
 from ..agent.models import FAST_MODEL, SMART_MODEL, OLLAMA_BASE_URL
 
 
 logger = logging.getLogger(__name__)
 configure_json_logging()
+configure_telemetry("amp-api")
 app = FastAPI(
     title="AMP Agent API",
     description="API local para executar o agente AMP",
     version="0.3.0",
 )
+instrument_fastapi(app)
+
+
+@app.middleware("http")
+async def correlation_context(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    with bind_context(
+        request_id=request_id,
+        run_id=request.headers.get("X-AMP-Run-ID"),
+        assistant_id=request.headers.get("X-AMP-Assistant-ID"),
+        http_method=request.method,
+        http_route=request.url.path,
+    ):
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
 
 VOICE_API_KEY_PATH = Path("/run/secrets/amp_voice_api_key")
 VOICE_MAX_AGE_SECONDS = 60
@@ -212,7 +236,7 @@ def enqueue_message(
     if deadline_seconds is not None:
         deadline_at = datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds)
     try:
-        return enqueue_execution(
+        result = enqueue_execution(
             source=source,
             request_id=request_id,
             idempotency_key=idempotency_key,
@@ -223,6 +247,19 @@ def enqueue_message(
             deadline_at=deadline_at,
             priority=priority,
         )
+        execution = result["execution"]
+        log_event(
+            logger,
+            "execution.accepted",
+            execution_id=str(execution["id"]),
+            thread_id=str(conversation_id),
+            run_id=str(execution["id"]),
+            assistant_id=(
+                str(execution["agent_id"]) if execution.get("agent_id") else None
+            ),
+            source=source,
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -363,6 +400,49 @@ def executions_endpoint(workspace_id: UUID | None = None, status: str | None = N
 def execution_events_endpoint(execution_id: UUID, after_sequence: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=500)):
     if not get_execution(execution_id): raise HTTPException(status_code=404, detail="Execução não encontrada.")
     return list_execution_events(execution_id, after_sequence, limit)
+
+
+async def _execution_event_stream(execution_id: UUID, after_sequence: int):
+    cursor = after_sequence
+    while True:
+        rows = list_execution_events(execution_id, cursor, 100)
+        for row in rows:
+            cursor = int(row["sequence_no"])
+            payload = json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":"))
+            yield f"id: {cursor}\nevent: {row.get('event_name', 'execution.event')}\ndata: {payload}\n\n"
+
+        execution = get_execution(execution_id)
+        if execution and execution["status"] in {"succeeded", "failed", "cancelled"}:
+            break
+        yield ": heartbeat\n\n"
+        await asyncio.sleep(0.5)
+
+
+@app.get("/v1/executions/{execution_id}/events/stream")
+async def execution_events_stream_endpoint(
+    execution_id: UUID,
+    request: Request,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    after_sequence: int = Query(default=0, ge=0),
+):
+    if not get_execution(execution_id):
+        raise HTTPException(status_code=404, detail="Execução não encontrada.")
+    try:
+        cursor = max(after_sequence, int(last_event_id or 0))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Last-Event-ID inválido.") from exc
+
+    async def stream_with_disconnect_check():
+        async for chunk in _execution_event_stream(execution_id, cursor):
+            if await request.is_disconnected():
+                break
+            yield chunk
+
+    return StreamingResponse(
+        stream_with_disconnect_check(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/v1/executions/{execution_id}/cancel")

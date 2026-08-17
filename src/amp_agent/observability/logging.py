@@ -5,13 +5,27 @@ import logging
 import sys
 from datetime import datetime, timezone
 from typing import Any
+
+from opentelemetry import trace
+
+from .context import current_context
 from .sanitize import sanitize_metadata
+
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {"timestamp": datetime.now(timezone.utc).isoformat(), "level": record.levelname.lower(), "service": record.name, "event": record.getMessage()}
+        correlation = current_context()
+        span = trace.get_current_span()
+        span_context = span.get_span_context()
+        if span_context.is_valid:
+            correlation.setdefault("trace_id", format(span_context.trace_id, "032x"))
+            correlation.setdefault("span_id", format(span_context.span_id, "016x"))
         context = getattr(record, "amp_context", None)
-        if isinstance(context, dict): payload.update(sanitize_metadata(context))
+        if isinstance(context, dict):
+            correlation.update(context)
+        if correlation:
+            payload.update(sanitize_metadata(correlation))
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 def configure_json_logging(level: int = logging.INFO) -> None:
