@@ -1,7 +1,7 @@
 from .context import bind_context, current_context
 from .logging import configure_json_logging, log_event
 from .sanitize import fingerprint_error, safe_error, sanitize_metadata
-from .telemetry import configure_telemetry, instrument_fastapi
+from .telemetry import configure_telemetry, execution_span, instrument_fastapi
 
 __all__ = [
     "bind_context",

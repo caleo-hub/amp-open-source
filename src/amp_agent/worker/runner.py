@@ -12,7 +12,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from ..config.settings import (GRAPH_VERSION, JOB_HEARTBEAT_SECONDS, JOB_LEASE_SECONDS, STATE_VERSION, RUNTIME_MAX_STEPS, AMP_AGENT_VERSION)
 from ..agent.graph import build_graph
 from ..agent.history import build_history
-from ..observability import bind_context, configure_json_logging, configure_telemetry, log_event
+from ..observability import bind_context, configure_json_logging, configure_telemetry, execution_span, log_event
 from ..persistence.repositories import claim_job, complete_job, fail_job, get_execution_input, heartbeat, run_retention
 from ..persistence.checkpoints import delete_terminal_threads
 from ..persistence.runtime import (ExecutionCancelled, RuntimeControlError, RuntimeLimitExceeded, assert_execution_active, effective_cancel, heartbeat_worker, register_worker)
@@ -109,25 +109,35 @@ def handle_claimed_job(graph, job: dict, worker_id: str, heartbeat_handle: Heart
         worker_id=worker_id,
     ):
         try:
-            run_job(graph, job)
-        except ExecutionCancelled:
-            effective_cancel(job)
-        except RuntimeLimitExceeded as exc:
-            fail_job(job, exc.code, _safe_failure_message(exc, exc.code), 0, retryable=False)
-        except RuntimeControlError:
-            pass
-        except Exception as exc:
-            logger.error(
-                "execution.failed",
-                extra={
-                    "amp_context": {
-                        "attempt_no": job.get("attempts"),
-                        "error_class": type(exc).__name__,
-                    }
-                },
-            )
-            delay = min(300.0, 5.0 * (2 ** max(job["attempts"] - 1, 0)))
-            fail_job(job, "worker_error", _safe_failure_message(exc), delay, retryable=True)
+            with execution_span(
+                str(job["execution_id"]),
+                str(job["id"]),
+                job.get("attempts"),
+            ) as span:
+                try:
+                    run_job(graph, job)
+                    span.set_attribute("amp.outcome", "succeeded")
+                except ExecutionCancelled:
+                    span.set_attribute("amp.outcome", "cancelled")
+                    effective_cancel(job)
+                except RuntimeLimitExceeded as exc:
+                    span.set_attribute("amp.outcome", "limit_exceeded")
+                    fail_job(job, exc.code, _safe_failure_message(exc, exc.code), 0, retryable=False)
+                except RuntimeControlError:
+                    span.set_attribute("amp.outcome", "stale")
+                except Exception as exc:
+                    span.set_attribute("amp.outcome", "failed")
+                    logger.error(
+                        "execution.failed",
+                        extra={
+                            "amp_context": {
+                                "attempt_no": job.get("attempts"),
+                                "error_class": type(exc).__name__,
+                            }
+                        },
+                    )
+                    delay = min(300.0, 5.0 * (2 ** max(job["attempts"] - 1, 0)))
+                    fail_job(job, "worker_error", _safe_failure_message(exc), delay, retryable=True)
         finally:
             heartbeat_handle.stop()
             heartbeat_worker(worker_id, "idle")

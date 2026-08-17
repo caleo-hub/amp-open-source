@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
+from collections.abc import Iterator
 from typing import Any
 
 from opentelemetry import trace
@@ -11,6 +13,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
+from opentelemetry.trace import Span
 
 
 _configured = False
@@ -67,3 +70,28 @@ def instrument_fastapi(app: Any) -> None:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
     FastAPIInstrumentor().instrument_app(app)
+
+
+@contextmanager
+def execution_span(
+    execution_id: str,
+    job_id: str,
+    attempt: int | None = None,
+) -> Iterator[Span]:
+    """Create a safe root span for one worker execution.
+
+    Only stable identifiers and control-plane metadata are attached. Prompt,
+    response, tool arguments and tool results remain outside telemetry.
+    """
+    tracer = trace.get_tracer("amp-agent.runtime")
+    attributes = {
+        "amp.execution_id": execution_id,
+        "amp.job_id": job_id,
+    }
+    if attempt is not None:
+        attributes["amp.attempt"] = attempt
+    with tracer.start_as_current_span(
+        "amp.execution",
+        attributes=attributes,
+    ) as span:
+        yield span
