@@ -147,6 +147,26 @@ services:
       amp-migrate:
         condition: service_completed_successfully
 
+  amp-chat:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: amp-chat
+    logging: *default-logging
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      NODE_ENV: "production"
+      AMP_API_URL: "http://127.0.0.1:8000"
+      AMP_CHAT_TOKEN: "${AMP_CHAT_TOKEN:?Configure AMP_CHAT_TOKEN for LAN access}"
+      AMP_CHAT_SESSION_SECRET: "${AMP_CHAT_SESSION_SECRET:-change-me-local}"
+      AMP_PUBLIC_ORIGIN: "${AMP_PUBLIC_ORIGIN:-}"
+      HOSTNAME: "0.0.0.0"
+      PORT: "3001"
+    depends_on:
+      amp-api:
+        condition: service_healthy
+
   amp-iot-bridge:
     build:
       context: .

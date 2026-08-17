@@ -12,6 +12,7 @@ class AgentState(LangChainAgentState, total=False):
     state_version: int
     execution_id: str
     conversation_id: str
+    workspace_id: str
     input_message_id: str
     graph_version: str
     channel: str

@@ -192,7 +192,7 @@ def request_cancel(execution_id: uuid.UUID, reason: str = "user_requested", requ
                 """, (reason, Jsonb(sanitize_metadata(requested_by or {"type": "api"})), execution_id)
             )
             append_event(conn, execution_id, "execution.cancel_requested", category="control", metadata={"reason": reason}, attempt_no=(job or {}).get("attempts"))
-        if job and job["status"] in {"queued", "retry"}:
+        if job and job["status"] in {"queued", "retry", "waiting_approval"}:
             conn.execute(
                 "UPDATE amp.jobs SET status = 'cancelled', lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, updated_at = now() WHERE id = %s",
                 (job["id"],),
@@ -275,6 +275,18 @@ def transition_success(job: dict, result: str) -> bool:
         if external:
             conn.execute("INSERT INTO amp.outbox_events(id, execution_id, event_type, reply_channel, payload) VALUES (%s, %s, 'execution.succeeded', %s, %s) ON CONFLICT (execution_id, event_type) DO NOTHING", (uuid.uuid4(), job["execution_id"], external, Jsonb({"execution_id": str(job["execution_id"]), "speech": result, "ok": True})))
         conn.execute("UPDATE amp.conversations SET updated_at = now() WHERE id = %s", (job["conversation_id"],))
+        conn.commit(); return True
+
+def mark_waiting_approval(job: dict) -> bool:
+    """Park a job whose LangGraph checkpoint contains an interrupt."""
+    with connection() as conn:
+        execution = conn.execute("SELECT id FROM amp.executions WHERE id = %s FOR UPDATE", (job["execution_id"],)).fetchone()
+        current = conn.execute("SELECT id, lease_token FROM amp.jobs WHERE id = %s FOR UPDATE", (job["id"],)).fetchone()
+        if not execution or not current or current["lease_token"] != job.get("lease_token"):
+            conn.commit(); return False
+        conn.execute("UPDATE amp.jobs SET status = 'waiting_approval', lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, updated_at = now() WHERE id = %s", (job["id"],))
+        conn.execute("UPDATE amp.executions SET status = 'waiting_approval', updated_at = now() WHERE id = %s", (job["execution_id"],))
+        append_event(conn, job["execution_id"], "execution.interrupted", category="control", metadata={"reason": "human_approval"}, outcome="interrupted")
         conn.commit(); return True
 
 
