@@ -36,6 +36,15 @@ somente quando há span válido, e o exportador nunca recebe conteúdo de prompt
 respostas, argumentos ou resultados de ferramentas.
 `OTEL_TRACE_SAMPLING_RATIO` controla a amostragem entre `0` e `1` e mantém a
 decisão do span pai.
+
+Para ativar um backend OTLP, defina `OTEL_ENABLED=true`,
+`OTEL_EXPORTER_OTLP_ENDPOINT` e, quando necessário, os cabeçalhos em
+`OTEL_EXPORTER_OTLP_HEADERS` (por exemplo, a autorização Basic do Langfuse).
+O endpoint e os cabeçalhos são injetados tanto no `amp-api` quanto no
+`amp-worker`; segredos devem ficar no `.env` local e nunca no repositório.
+O projeto não sobe o Langfuse automaticamente: a instalação self-hosted deve
+ser escolhida e provisionada separadamente, e então os dois serviços apontam
+para o endpoint OTLP dela.
 Requisições usam `X-Request-ID` recebido ou gerado pela API; o mesmo valor volta
 no response header. O worker vincula `execution_id`, `thread_id`, `run_id`,
 `assistant_id`, `job_id` e `worker_id` enquanto processa o job. Contextos são
