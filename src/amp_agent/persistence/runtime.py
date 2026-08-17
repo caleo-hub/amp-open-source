@@ -294,7 +294,7 @@ def transition_failure(job: dict, error_code: str, error_message: str, retry_del
         terminal = (not retryable) or current["attempts"] >= current["max_attempts"]
         fingerprint = fingerprint_error("worker", error_code)
         if terminal:
-            if error_code in {"deadline_exceeded", "step_limit_exceeded", "tool_call_limit_exceeded"}:
+            if error_code in {"deadline_exceeded", "step_limit_exceeded", "tool_call_limit_exceeded", "output_limit_exceeded"}:
                 append_event(conn, job["execution_id"], "execution.limit_exceeded", category="control", metadata={"error_code": error_code}, attempt_no=job.get("attempts"), outcome="failed", error_code=error_code, is_retryable=False, error_fingerprint=fingerprint)
             conn.execute("UPDATE amp.jobs SET status = 'dead', lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL, last_error_code = %s, last_error = %s, updated_at = now() WHERE id = %s", (error_code, error_message, job["id"]))
             conn.execute("UPDATE amp.executions SET status = 'failed', error_code = %s, error_message = %s, error_fingerprint = %s, error_retryable = %s, completed_at = now(), updated_at = now() WHERE id = %s", (error_code, error_message, fingerprint, retryable, job["execution_id"]))

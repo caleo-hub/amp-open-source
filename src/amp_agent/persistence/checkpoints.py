@@ -18,3 +18,17 @@ def delete_terminal_threads(checkpointer) -> int:
     for row in rows:
         checkpointer.delete_thread(str(row["checkpoint_thread_id"]))
     return len(rows)
+
+
+async def delete_terminal_threads_async(checkpointer) -> int:
+    """Delete expired threads through an AsyncPostgresSaver."""
+    with connection() as conn:
+        rows = conn.execute(
+            "SELECT id, checkpoint_thread_id FROM amp.executions "
+            "WHERE status IN ('succeeded', 'failed', 'cancelled') "
+            "AND completed_at < now() - interval '7 days' "
+            "AND checkpoint_thread_id IS NOT NULL"
+        ).fetchall()
+    for row in rows:
+        await checkpointer.adelete_thread(str(row["checkpoint_thread_id"]))
+    return len(rows)

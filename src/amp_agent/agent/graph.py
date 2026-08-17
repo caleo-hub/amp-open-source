@@ -1,36 +1,30 @@
+from langchain.agents import create_agent
 from langgraph.graph import END, START, StateGraph
 
-from .nodes import (
-    fast_node,
-    route_by_profile,
-    router_node,
-    should_use_tool,
-    smart_node,
-    guarded_tool_node,
-)
+from .middleware import RuntimeAgentMiddleware
+from .models import get_fast_model
+from .nodes import router_node
+from .prompts import FAST_SYSTEM_PROMPT
 from .state import AgentState
+from ..tools.policy import TOOL_REGISTRY
 
 
-def build_graph(checkpointer=None):
+def build_graph(checkpointer=None, store=None):
+    agent = create_agent(
+        model=get_fast_model(),
+        tools=list(TOOL_REGISTRY.values()),
+        system_prompt=FAST_SYSTEM_PROMPT,
+        middleware=[RuntimeAgentMiddleware()],
+        state_schema=AgentState,
+        name="amp_native_agent",
+    )
     builder = StateGraph(AgentState)
     builder.add_node("router", router_node)
-    builder.add_node("fast", fast_node)
-    builder.add_node("smart", smart_node)
-    builder.add_node("tools", guarded_tool_node)
+    builder.add_node("agent", agent)
     builder.add_edge(START, "router")
-    builder.add_conditional_edges(
-        "router",
-        route_by_profile,
-        {"fast": "fast", "smart": "smart"},
-    )
-    builder.add_conditional_edges(
-        "fast",
-        should_use_tool,
-        {"tools": "tools", "end": END},
-    )
-    builder.add_edge("tools", "fast")
-    builder.add_edge("smart", END)
-    return builder.compile(checkpointer=checkpointer)
+    builder.add_edge("router", "agent")
+    builder.add_edge("agent", END)
+    return builder.compile(checkpointer=checkpointer, store=store)
 
 
 # CLI/local compatibility: no database is required outside the worker.
