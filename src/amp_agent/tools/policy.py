@@ -11,6 +11,7 @@ TOOL_REGISTRY = {
 
 CHANNEL_TOOL_POLICY = {
     "chat": frozenset(TOOL_REGISTRY),
+    "ui": frozenset(TOOL_REGISTRY),
     "voice": frozenset({"system_status", "pesquisar_web"}),
 }
 
