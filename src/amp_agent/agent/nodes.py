@@ -3,20 +3,15 @@ from __future__ import annotations
 import time
 import uuid
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langgraph.prebuilt import ToolNode
+from langchain_core.messages import HumanMessage, SystemMessage
 
-from .models import get_fast_model, get_router_model, get_smart_model
-from .prompts import FAST_SYSTEM_PROMPT, ROUTER_SYSTEM_PROMPT, SMART_SYSTEM_PROMPT
-from .state import AgentState, ModelProfile
+from .models import get_router_model
+from .prompts import ROUTER_SYSTEM_PROMPT
+from .state import AgentState
 from ..observability.sanitize import safe_error
 from ..persistence.runtime import assert_execution_active, consume_budget, record_event
-from ..tools import pesquisar_web, system_status
-from ..tools.policy import TOOL_REGISTRY, allowed_tool_names
 
 router_model = get_router_model()
-smart_model = get_smart_model()
-tool_node = ToolNode([system_status, pesquisar_web])
 
 
 def _execution_id(state: AgentState):
@@ -61,40 +56,6 @@ def _invoke_model(model, messages, execution_id, model_name: str, parent_span_id
         raise
 
 
-def guarded_tool_node(state: AgentState):
-    execution_id = _execution_id(state)
-    span_id, started = _start_node(state, "tools")
-    try:
-        policy = state.get("tool_policy") or allowed_tool_names(state.get("channel"))
-        calls = getattr(state["messages"][-1], "tool_calls", [])
-        denied = [call for call in calls if call.get("name") not in policy]
-        if denied:
-            if execution_id:
-                for call in denied:
-                    record_event(execution_id, "tool.failed", metadata={"reason": "policy_denied"}, tool_name=call.get("name"), parent_span_id=span_id, outcome="failed", error_code="policy_denied", is_retryable=False)
-            result = {"messages": [ToolMessage(content="Essa ferramenta não está disponível neste canal.", tool_call_id=call.get("id", "denied-tool")) for call in denied]}
-        else:
-            tool_starts = {}
-            tool_events = {}
-            for call in calls:
-                if execution_id:
-                    assert_execution_active(execution_id)
-                    used = consume_budget(execution_id, "tool")
-                    tool_starts[call.get("id", call.get("name"))] = time.monotonic()
-                    tool_events[call.get("id", call.get("name"))] = record_event(execution_id, "tool.started", metadata={"used_tool_calls": used}, tool_name=call.get("name"), span_id=uuid.uuid4(), parent_span_id=span_id)
-            result = tool_node.invoke(state)
-            if execution_id:
-                for call in calls:
-                    started_tool = tool_starts.get(call.get("id", call.get("name")))
-                    record_event(execution_id, "tool.succeeded", metadata={}, tool_name=call.get("name"), span_id=(tool_events.get(call.get("id", call.get("name"))) or {}).get("span_id"), parent_span_id=span_id, duration_ms=((time.monotonic() - started_tool) * 1000 if started_tool else None), outcome="succeeded")
-        _finish_node(execution_id, "tools", started, span_id)
-        return result
-    except Exception as exc:
-        info = safe_error(exc, "tools", "tool_timeout" if "timeout" in type(exc).__name__.lower() else "tool_error", True)
-        _finish_node(execution_id, "tools", started, span_id, "failed", info)
-        raise
-
-
 def router_node(state: AgentState):
     execution_id = _execution_id(state)
     span_id, started = _start_node(state, "router")
@@ -110,39 +71,3 @@ def router_node(state: AgentState):
         info = safe_error(exc, "router", "model_error", True)
         _finish_node(execution_id, "router", started, span_id, "failed", info)
         raise
-
-
-def fast_node(state: AgentState):
-    execution_id = _execution_id(state)
-    span_id, started = _start_node(state, "fast")
-    try:
-        policy = state.get("tool_policy") or allowed_tool_names(state.get("channel"))
-        model = get_fast_model().bind_tools([TOOL_REGISTRY[name] for name in policy if name in TOOL_REGISTRY])
-        response = _invoke_model(model, [SystemMessage(content=FAST_SYSTEM_PROMPT), *state["messages"]], execution_id, "fast", span_id)
-        _finish_node(execution_id, "fast", started, span_id)
-        return {"messages": [response]}
-    except Exception as exc:
-        info = safe_error(exc, "fast", "model_error", True)
-        _finish_node(execution_id, "fast", started, span_id, "failed", info)
-        raise
-
-
-def smart_node(state: AgentState):
-    execution_id = _execution_id(state)
-    span_id, started = _start_node(state, "smart")
-    try:
-        response = _invoke_model(smart_model, [SystemMessage(content=SMART_SYSTEM_PROMPT), *state["messages"]], execution_id, "smart", span_id)
-        _finish_node(execution_id, "smart", started, span_id)
-        return {"messages": [response]}
-    except Exception as exc:
-        info = safe_error(exc, "smart", "model_error", True)
-        _finish_node(execution_id, "smart", started, span_id, "failed", info)
-        raise
-
-
-def route_by_profile(state: AgentState) -> ModelProfile:
-    return state["profile"]
-
-
-def should_use_tool(state: AgentState) -> str:
-    return "tools" if getattr(state["messages"][-1], "tool_calls", None) else "end"

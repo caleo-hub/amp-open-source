@@ -5,12 +5,12 @@ import os
 from collections.abc import Iterator
 from typing import Any
 
-from opentelemetry import trace
+from opentelemetry import baggage, context, trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 from opentelemetry.instrumentation.psycopg import PsycopgInstrumentor
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from opentelemetry.trace import Span
@@ -18,6 +18,32 @@ from opentelemetry.trace import Span
 
 _configured = False
 _instrumented_clients = False
+
+
+class LangfuseTraceAttributeProcessor(SpanProcessor):
+    """Copy Langfuse trace attributes from baggage to every child span."""
+
+    _keys = (
+        "langfuse.session.id",
+        "langfuse.trace.name",
+        "langfuse.version",
+        "langfuse.environment",
+    )
+
+    def on_start(self, span: ReadableSpan, parent_context=None) -> None:
+        for key in self._keys:
+            value = baggage.get_baggage(key, context=parent_context)
+            if value is not None:
+                span.set_attribute(key, value)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        return None
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
 
 
 def _enabled() -> bool:
@@ -53,6 +79,7 @@ def configure_telemetry(service_name: str) -> bool:
     )
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     exporter = OTLPSpanExporter(endpoint=endpoint) if endpoint else OTLPSpanExporter()
+    provider.add_span_processor(LangfuseTraceAttributeProcessor())
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
@@ -77,6 +104,7 @@ def execution_span(
     execution_id: str,
     job_id: str,
     attempt: int | None = None,
+    conversation_id: str | None = None,
 ) -> Iterator[Span]:
     """Create a safe root span for one worker execution.
 
@@ -90,8 +118,22 @@ def execution_span(
     }
     if attempt is not None:
         attributes["amp.attempt"] = attempt
-    with tracer.start_as_current_span(
-        "amp.execution",
-        attributes=attributes,
-    ) as span:
-        yield span
+    if conversation_id:
+        attributes["langfuse.session.id"] = conversation_id
+        attributes["langfuse.trace.name"] = "amp.execution"
+    baggage_context = context.get_current()
+    for key, value in (
+        ("langfuse.session.id", conversation_id),
+        ("langfuse.trace.name", "amp.execution"),
+    ):
+        if value:
+            baggage_context = baggage.set_baggage(key, value, context=baggage_context)
+    token = context.attach(baggage_context)
+    try:
+        with tracer.start_as_current_span(
+            "amp.execution",
+            attributes=attributes,
+        ) as span:
+            yield span
+    finally:
+        context.detach(token)

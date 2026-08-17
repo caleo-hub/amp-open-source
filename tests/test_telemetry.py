@@ -47,6 +47,14 @@ class ExecutionSpanTests(unittest.TestCase):
         }
         self.assertIn("RuntimeError", exception_types)
 
+    def test_execution_span_carries_langfuse_session(self):
+        with patch.object(telemetry.trace, "get_tracer", return_value=self.tracer):
+            with telemetry.execution_span("execution-3", "job-3", conversation_id="conversation-3"):
+                pass
+
+        span = self.exporter.get_finished_spans()[0]
+        self.assertEqual(span.attributes["langfuse.session.id"], "conversation-3")
+
 
 if __name__ == "__main__":
     unittest.main()

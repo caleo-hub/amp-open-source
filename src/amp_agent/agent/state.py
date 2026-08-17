@@ -1,14 +1,13 @@
-from typing import Annotated, Literal
+from typing import Literal
 
-from langgraph.graph.message import add_messages
+from langchain.agents import AgentState as LangChainAgentState
 from typing_extensions import TypedDict
 
 
 ModelProfile = Literal["fast", "smart"]
 
 
-class AgentState(TypedDict, total=False):
-    messages: Annotated[list, add_messages]
+class AgentState(LangChainAgentState, total=False):
     profile: ModelProfile
     state_version: int
     execution_id: str

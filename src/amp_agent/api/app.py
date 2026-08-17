@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
@@ -31,6 +32,9 @@ from ..persistence.repositories import (
     list_execution_events,
 )
 from ..persistence.db import connection
+from ..config.settings import database_settings
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.store.postgres import AsyncPostgresStore
 from ..persistence.runtime import request_cancel
 from ..observability import (
     bind_context,
@@ -46,10 +50,25 @@ from ..agent.models import FAST_MODEL, SMART_MODEL, OLLAMA_BASE_URL
 logger = logging.getLogger(__name__)
 configure_json_logging()
 configure_telemetry("amp-api")
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Keep native LangGraph persistence handles available to the API."""
+    dsn = database_settings().dsn("langgraph,public")
+    async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer, AsyncPostgresStore.from_conn_string(dsn) as store:
+        await checkpointer.setup()
+        await store.setup()
+        application.state.langgraph_checkpointer = checkpointer
+        application.state.langgraph_store = store
+        yield
+
+
 app = FastAPI(
     title="AMP Agent API",
     description="API local para executar o agente AMP",
     version="0.3.0",
+    lifespan=lifespan,
 )
 instrument_fastapi(app)
 
