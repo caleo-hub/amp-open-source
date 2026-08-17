@@ -7,7 +7,9 @@ override_file="${LANGFUSE_COMPOSE_OVERRIDE:-/home/caleo/services/langfuse/docker
 [[ -d "$base_dir" && -r "$base_dir/docker-compose.yml" ]] || { echo "Langfuse compose directory not found: $base_dir" >&2; exit 1; }
 [[ -r "$secrets_file" ]] || { echo "Langfuse secrets file is not readable: $secrets_file" >&2; exit 1; }
 # shellcheck disable=SC1090
+set -a
 source "$secrets_file"
+set +a
 : "${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?Missing Langfuse project public key}"
 : "${LANGFUSE_INIT_PROJECT_SECRET_KEY:?Missing Langfuse project secret key}"
 export LANGFUSE_INIT_PROJECT_PUBLIC_KEY LANGFUSE_INIT_PROJECT_SECRET_KEY
