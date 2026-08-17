@@ -34,6 +34,8 @@ worker exportam spans OTLP para `OTEL_EXPORTER_OTLP_ENDPOINT`; FastAPI, HTTPX e
 Psycopg são instrumentados automaticamente. Logs incluem `trace_id` e `span_id`
 somente quando há span válido, e o exportador nunca recebe conteúdo de prompts,
 respostas, argumentos ou resultados de ferramentas.
+`OTEL_TRACE_SAMPLING_RATIO` controla a amostragem entre `0` e `1` e mantém a
+decisão do span pai.
 Requisições usam `X-Request-ID` recebido ou gerado pela API; o mesmo valor volta
 no response header. O worker vincula `execution_id`, `thread_id`, `run_id`,
 `assistant_id`, `job_id` e `worker_id` enquanto processa o job. Contextos são

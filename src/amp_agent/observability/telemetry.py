@@ -10,6 +10,7 @@ from opentelemetry.instrumentation.psycopg import PsycopgInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 
 
 _configured = False
@@ -36,7 +37,17 @@ def configure_telemetry(service_name: str) -> bool:
             "deployment.environment": os.getenv("AMP_ENVIRONMENT", "local"),
         }
     )
-    provider = TracerProvider(resource=resource)
+    try:
+        sampling_ratio = min(
+            1.0,
+            max(0.0, float(os.getenv("OTEL_TRACE_SAMPLING_RATIO", "1"))),
+        )
+    except ValueError:
+        sampling_ratio = 1.0
+    provider = TracerProvider(
+        resource=resource,
+        sampler=ParentBased(TraceIdRatioBased(sampling_ratio)),
+    )
     endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     exporter = OTLPSpanExporter(endpoint=endpoint) if endpoint else OTLPSpanExporter()
     provider.add_span_processor(BatchSpanProcessor(exporter))
