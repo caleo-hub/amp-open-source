@@ -44,7 +44,7 @@ from ..observability import (
     log_event,
 )
 from ..config.settings import HEALTH_CACHE_SECONDS, SEARXNG_BASE_URL, WORKER_STALE_SECONDS
-from ..agent.models import FAST_MODEL, SMART_MODEL, OLLAMA_BASE_URL
+from ..agent.models import FAST_MODEL, OLLAMA_BASE_URL
 
 
 logger = logging.getLogger(__name__)
@@ -333,7 +333,7 @@ def _ready_snapshot() -> dict:
         with urlopen(f"{OLLAMA_BASE_URL}/api/tags", timeout=2) as response:
             payload = json.loads(response.read())
         models = {item.get("name") for item in payload.get("models", []) if isinstance(item, dict)}
-        missing = sorted({FAST_MODEL, SMART_MODEL} - models)
+        missing = sorted({FAST_MODEL} - models)
         if missing: raise RuntimeError("models_missing")
         return {"models": sorted(models)}
     def searxng():

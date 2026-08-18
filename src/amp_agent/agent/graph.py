@@ -3,7 +3,6 @@ from langgraph.graph import END, START, StateGraph
 
 from .middleware import RuntimeAgentMiddleware
 from .models import get_fast_model
-from .nodes import router_node
 from .prompts import FAST_SYSTEM_PROMPT
 from .state import AgentState
 from ..tools.policy import TOOL_REGISTRY
@@ -19,10 +18,8 @@ def build_graph(checkpointer=None, store=None):
         name="amp_native_agent",
     )
     builder = StateGraph(AgentState)
-    builder.add_node("router", router_node)
     builder.add_node("agent", agent)
-    builder.add_edge(START, "router")
-    builder.add_edge("router", "agent")
+    builder.add_edge(START, "agent")
     builder.add_edge("agent", END)
     return builder.compile(checkpointer=checkpointer, store=store)
 

@@ -33,7 +33,7 @@ flowchart TD
 ## Estado atual
 
 - [x] Ubuntu, Docker e Ollama
-- [x] LangGraph com perfis FAST e SMART
+- [x] LangGraph com modelo FAST
 - [x] FastAPI e SearXNG
 - [x] PostgreSQL, histórico e checkpoints persistentes
 - [x] Worker, fila, retries, leases e idempotência

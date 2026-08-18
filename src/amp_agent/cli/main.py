@@ -15,7 +15,7 @@ EXIT_COMMANDS = {
 def main():
     print()
     print("AMP Agent")
-    print("Router automático FAST / SMART")
+    print("Modelo FAST")
     print("Digite 'sair' para encerrar.")
     print()
 
@@ -39,8 +39,7 @@ def main():
                             content=text
                         )
                     ],
-                    # Valor inicial.
-                    # O router irá sobrescrever.
+                    # O runtime usa somente o perfil fast.
                     "profile": "fast",
                 }
             )

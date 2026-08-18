@@ -8,10 +8,7 @@ OLLAMA_BASE_URL = os.getenv(
     "OLLAMA_BASE_URL",
     "http://localhost:11434",
 ).rstrip("/")
-REQUIRED_MODELS = (
-    "qwen3.5:4b",
-    "qwen3.5:2b-q4_K_M",
-)
+REQUIRED_MODELS = ("qwen3.5:2b-q4_K_M",)
 
 
 def get_system_status() -> dict:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import ast
 import inspect
+import re
 import signal
 import threading
 import time
@@ -19,7 +21,7 @@ from ..agent.history import build_history
 from ..observability import bind_context, configure_json_logging, configure_telemetry, execution_span, log_event
 from ..persistence.repositories import claim_job, complete_job, fail_job, get_execution_input, heartbeat, run_retention
 from ..persistence.checkpoints import delete_terminal_threads_async
-from ..persistence.chat import pending_approval_decision
+from ..persistence.chat import append_lifecycle_event, append_stream_event, normalize_protocol_event, pending_approval_decision
 from ..persistence.runtime import (ExecutionCancelled, RuntimeControlError, RuntimeLimitExceeded, assert_execution_active, effective_cancel, heartbeat_worker, record_event, register_worker)
 from ..tools.policy import allowed_tool_names
 
@@ -45,7 +47,20 @@ class Heartbeat:
 
 def _last_content(state: dict) -> str:
     messages = state.get("messages", []) if state else []
-    return str(getattr(messages[-1], "content", messages[-1])) if messages else ""
+    if not messages:
+        return ""
+    content = getattr(messages[-1], "content", messages[-1])
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            item.get("text", "") if isinstance(item, dict) and item.get("type") in {"text", "text-delta"}
+            else item if isinstance(item, str) else ""
+            for item in content
+        )
+    if isinstance(content, dict):
+        return str(content.get("text", ""))
+    return ""
 
 
 async def _stream_graph(graph, input_data, config: dict, execution_id: uuid.UUID):
@@ -65,16 +80,48 @@ async def _stream_graph(graph, input_data, config: dict, execution_id: uuid.UUID
         if event.get("type") != "event":
             continue
         method = event.get("method")
-        if method not in {"values", "updates", "custom", "interrupts", "debug", "messages", "messages-tuple", "tasks", "checkpoints", "events", "subgraphs"}:
+        if method not in {"values", "updates", "custom", "interrupts", "debug", "messages", "messages-tuple", "tools", "tasks", "checkpoints", "events", "subgraphs"}:
             continue
-        params = event.get("params") or {}
-        namespace = params.get("namespace") or []
-        metadata = {"sequence": event.get("seq"), "namespace": list(namespace)}
-        if event.get("data") is not None:
-            metadata["data"] = event.get("data")
-        if params and set(params) != {"namespace"}:
-            metadata["params"] = params
-        record_event(execution_id, f"stream.{method}", metadata=metadata, outcome="observed")
+        method, params, event_key = normalize_protocol_event(event)
+        # The UI stream is complete and durable.  Observability receives a
+        # compact projection separately, avoiding its metadata truncation.
+        append_stream_event(execution_id, method, params, event_key)
+        # Depending on the LangGraph release, an interrupt is either emitted
+        # on the dedicated ``interrupts`` channel or embedded in a values
+        # snapshot. Normalize both forms into the durable input.requested
+        # event consumed by AG-UI.
+        snapshot_data = params.get("data") if isinstance(params, dict) else None
+        interrupts = params.get("interrupts") if isinstance(params, dict) else None
+        if interrupts is None and isinstance(snapshot_data, dict):
+            interrupts = snapshot_data.get("interrupts")
+        if method in {"values", "updates"} and isinstance(interrupts, list):
+            for index, raw in enumerate(interrupts):
+                # Some LangGraph versions stringify Interrupt before the v3
+                # event reaches the worker. Recover its repr conservatively;
+                # newer versions already provide a JSON object.
+                if isinstance(raw, str):
+                    match = re.match(r"^Interrupt\(value=(.*), id=(['\"])(.*?)\2\)$", raw)
+                    if match:
+                        try:
+                            raw = {"id": match.group(3), "value": ast.literal_eval(match.group(1))}
+                        except (SyntaxError, ValueError):
+                            raw = None
+                if not isinstance(raw, dict):
+                    continue
+                interrupt_id = raw.get("id") or f"amp-interrupt-{event_key}-{index}"
+                payload = raw.get("value", raw)
+                append_stream_event(
+                    execution_id,
+                    "input.requested",
+                    {"namespace": params.get("namespace", []), "data": {"interrupt_id": str(interrupt_id), "payload": payload}},
+                    f"interrupt:{event_key}:{interrupt_id}",
+                )
+        record_event(
+            execution_id,
+            f"stream.{method}",
+            metadata={"sequence": event.get("seq"), "namespace": params.get("namespace", [])},
+            outcome="observed",
+        )
     output = stream.output()
     if inspect.isawaitable(output):
         output = await output
@@ -124,12 +171,14 @@ async def run_job(graph, job: dict) -> None:
     if snapshot and snapshot.next:
         from ..persistence.runtime import mark_waiting_approval
         mark_waiting_approval(job)
+        append_lifecycle_event(execution_id, "interrupted")
         return
     content = _last_content(result)
     if not content: raise RuntimeError("O grafo terminou sem uma resposta textual.")
     if len(content) > RUNTIME_MAX_OUTPUT_CHARS:
         raise RuntimeLimitExceeded("output_limit_exceeded")
     if not complete_job(job, content): raise RuntimeControlError("stale")
+    append_lifecycle_event(execution_id, "completed")
 
 
 async def handle_claimed_job(graph, job: dict, worker_id: str, heartbeat_handle: Heartbeat) -> None:
@@ -143,6 +192,7 @@ async def handle_claimed_job(graph, job: dict, worker_id: str, heartbeat_handle:
         worker_id=worker_id,
     ):
         try:
+            append_lifecycle_event(uuid.UUID(str(job["execution_id"])), "running", attempt=job.get("attempts"))
             with execution_span(
                 str(job["execution_id"]),
                 str(job["id"]),
@@ -155,9 +205,11 @@ async def handle_claimed_job(graph, job: dict, worker_id: str, heartbeat_handle:
                 except ExecutionCancelled:
                     span.set_attribute("amp.outcome", "cancelled")
                     effective_cancel(job)
+                    append_lifecycle_event(uuid.UUID(str(job["execution_id"])), "completed", status="cancelled")
                 except RuntimeLimitExceeded as exc:
                     span.set_attribute("amp.outcome", "limit_exceeded")
-                    fail_job(job, exc.code, _safe_failure_message(exc, exc.code), 0, retryable=False)
+                    outcome = fail_job(job, exc.code, _safe_failure_message(exc, exc.code), 0, retryable=False)
+                    append_lifecycle_event(uuid.UUID(str(job["execution_id"])), "failed" if outcome == "dead" else "queued", attempt=job.get("attempts"))
                 except RuntimeControlError:
                     span.set_attribute("amp.outcome", "stale")
                 except Exception as exc:
@@ -172,7 +224,8 @@ async def handle_claimed_job(graph, job: dict, worker_id: str, heartbeat_handle:
                         },
                     )
                     delay = min(300.0, 5.0 * (2 ** max(job["attempts"] - 1, 0)))
-                    fail_job(job, "worker_error", _safe_failure_message(exc), delay, retryable=True)
+                    outcome = fail_job(job, "worker_error", _safe_failure_message(exc), delay, retryable=True)
+                    append_lifecycle_event(uuid.UUID(str(job["execution_id"])), "failed" if outcome == "dead" else "queued", attempt=job.get("attempts"))
         finally:
             heartbeat_handle.stop()
             heartbeat_worker(worker_id, "idle")

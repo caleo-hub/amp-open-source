@@ -1,60 +1,75 @@
 'use client';
 
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
+import { CopilotChat, CopilotKit } from '@copilotkit/react-core/v2';
 
-type Thread = { thread_id: string; title: string; archived_at?: string | null; last_message_at?: string; status?: string; run_count?: number };
-type Message = { role: string; content: string };
-type EventRow = { event_name?: string; event_type?: string; metadata?: Record<string, any>; recorded_at?: string; stream_sequence?: number; sequence_no?: number; [key: string]: any };
-type Run = { run_id: string; status: string; created_at?: string; completed_at?: string; error_message?: string };
-type Checkpoint = { checkpoint_id?: string; parent_checkpoint_id?: string; created_at?: string; next?: string[]; values?: Record<string, any>; metadata?: Record<string, any> };
+type Thread = { thread_id: string; title: string; archived_at?: string | null; last_message_at?: string };
+type Run = { run_id: string; status: string; created_at?: string };
+type Checkpoint = { checkpoint_id?: string; parent_checkpoint_id?: string; created_at?: string; next?: string[]; metadata?: Record<string, unknown> };
 
 async function api(path: string, init?: RequestInit) {
-  const response = await fetch(`/api${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) }, cache: 'no-store' });
-  if (response.status === 401) throw new Error('auth');
-  if (!response.ok) throw new Error(await response.text());
+  const headers = new Headers(init?.headers);
+  if (init?.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const response = await fetch(`/api${path}`, { ...init, headers, cache: 'no-store' });
+  if (!response.ok) throw new Error(response.status === 401 ? 'auth' : await response.text());
   return response;
 }
 
-function eventData(event: EventRow) {
-  const metadata = event.metadata || {};
-  const params = metadata.params || metadata;
-  return { params, data: params.data, interrupts: params.interrupts || (params.data && !Array.isArray(params.data) ? params.data.interrupts : undefined) };
+function ThreadChat({ thread, onRefresh }: { thread: Thread; onRefresh: () => Promise<void> }) {
+  return <CopilotKit key={thread.thread_id} runtimeUrl="/api/copilotkit" agent="amp" credentials="same-origin" useSingleEndpoint>
+    <section className="chat copilot-chat"><header><div><span className="eyebrow">THREAD</span><h2>{thread.title || 'Nova conversa'}</h2></div><span className="status">AG-UI · CopilotKit</span></header>
+      <div className="copilot-surface"><CopilotChat agentId="amp" threadId={thread.thread_id} labels={{ chatInputPlaceholder: 'Escreva uma mensagem…', welcomeMessageText: 'Como posso ajudar?', chatDisclaimerText: 'As respostas podem conter imprecisões.' }} /></div>
+    </section>
+    <RuntimeInspector thread={thread} onRefresh={onRefresh} />
+  </CopilotKit>;
+}
+
+function RuntimeInspector({ thread, onRefresh }: { thread: Thread; onRefresh: () => Promise<void> }) {
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
+  const [selectedCheckpoint, setSelectedCheckpoint] = useState<Checkpoint | null>(null);
+  const [error, setError] = useState('');
+  const refresh = async () => {
+    try {
+      const [runsResponse, historyResponse] = await Promise.all([api(`/threads/${thread.thread_id}/runs`), api(`/threads/${thread.thread_id}/history?limit=30`)]);
+      const nextRuns = ((await runsResponse.json()).runs || []) as Run[];
+      const nextCheckpoints = ((await historyResponse.json()).checkpoints || []) as Checkpoint[];
+      setRuns(nextRuns); setCheckpoints(nextCheckpoints); setSelectedCheckpoint((old) => old || nextCheckpoints[0] || null);
+      await onRefresh();
+    } catch { setError('Não foi possível atualizar a execução.'); }
+  };
+  useEffect(() => { void refresh(); const timer = window.setInterval(() => void refresh(), 2500); return () => window.clearInterval(timer); }, [thread.thread_id]);
+  async function cancel(run: Run) { try { await api(`/threads/${thread.thread_id}/runs/${run.run_id}/cancel`, { method: 'POST', body: '{}' }); await refresh(); } catch { setError('Falha ao cancelar a execução.'); } }
+  async function retry(run: Run) { try { await api(`/threads/${thread.thread_id}/runs/${run.run_id}/retry`, { method: 'POST', body: '{}' }); await refresh(); } catch { setError('Falha ao repetir a execução.'); } }
+  async function decide(response: unknown) {
+    try { await api(`/threads/${thread.thread_id}/commands`, { method: 'POST', body: JSON.stringify({ method: 'input.respond', params: { response } }) }); await refresh(); }
+    catch { setError('Não foi possível registrar a decisão.'); }
+  }
+  return <aside className="inspector"><span className="eyebrow">RUNTIME</span><b>Runs</b>{runs.slice(0, 6).map((run) => <div className="run-card" key={run.run_id}><span>{run.status}</span><small>{run.created_at && new Date(run.created_at).toLocaleTimeString('pt-BR')}</small>{['queued', 'running'].includes(run.status) && <button className="outline" onClick={() => void cancel(run)}>Cancelar</button>}{['completed', 'failed', 'cancelled'].includes(run.status) && <button className="outline" onClick={() => void retry(run)}>Repetir</button>}{run.status === 'interrupted' && <div className="approval-actions"><button className="outline" onClick={() => void decide(false)}>Rejeitar</button><button className="primary" onClick={() => void decide(true)}>Aprovar</button></div>}</div>)}
+    <b className="panel-title">Timeline</b><div className="event"><i /><span>{runs[0]?.status || 'Aguardando execução'}<small>Lifecycle durável</small></span></div>
+    <b className="panel-title">Checkpoints</b>{checkpoints.slice(0, 8).map((checkpoint, index) => <button className="checkpoint" key={checkpoint.checkpoint_id || index} onClick={() => setSelectedCheckpoint(checkpoint)}>{checkpoint.checkpoint_id?.slice(0, 14) || `checkpoint ${index + 1}`}<small>{checkpoint.created_at && new Date(checkpoint.created_at).toLocaleString('pt-BR')}</small></button>)}
+    {selectedCheckpoint && <pre className="checkpoint-view">{JSON.stringify({ checkpoint_id: selectedCheckpoint.checkpoint_id, parent: selectedCheckpoint.parent_checkpoint_id, next: selectedCheckpoint.next, metadata: selectedCheckpoint.metadata }, null, 2)}</pre>}{error && <p className="error">{error}</p>}
+  </aside>;
 }
 
 export default function Home() {
-  const [auth, setAuth] = useState<boolean | null>(null), [token, setToken] = useState(''), [threads, setThreads] = useState<Thread[]>([]), [showArchived, setShowArchived] = useState(false), [selected, setSelected] = useState<Thread | null>(null), [messages, setMessages] = useState<Message[]>([]), [events, setEvents] = useState<EventRow[]>([]), [runs, setRuns] = useState<Run[]>([]), [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]), [selectedCheckpoint, setSelectedCheckpoint] = useState<Checkpoint | null>(null), [text, setText] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState(''), [interrupt, setInterrupt] = useState<Record<string, any> | null>(null), [editArgs, setEditArgs] = useState('');
-  const threadEventId = useRef(0), runEventId = useRef(0), seen = useRef(new Set<string>()), streamAbort = useRef<AbortController | null>(null);
-
-  useEffect(() => { api('/session').then(() => setAuth(true)).catch(() => setAuth(false)); return () => streamAbort.current?.abort(); }, []);
-  useEffect(() => { if (auth) refreshThreads(); }, [auth, showArchived]);
-
-  async function refreshThreads() { try { setThreads((await (await api(`/threads?include_archived=${showArchived}`)).json()).threads || []); } catch { setError('Falha ao carregar threads.'); } }
-  async function refreshRuns(threadId: string) { try { setRuns((await (await api(`/threads/${threadId}/runs`)).json()).runs || []); } catch { setError('Falha ao carregar runs.'); } }
-  async function loadCheckpoints(threadId: string) { try { const result = await (await api(`/threads/${threadId}/history?limit=50`)).json(); setCheckpoints(result.checkpoints || []); setSelectedCheckpoint((result.checkpoints || [])[0] || null); } catch { setCheckpoints([]); } }
-  function acceptEvent(event: EventRow, source = 'stream') {
-    const sequence = Number(event.stream_sequence || event.sequence_no || 0); const key = `${event.id || `${source}:${sequence}`}`;
-    if (sequence && seen.current.has(key)) return; if (sequence) seen.current.add(key);
-    if (source === 'thread') threadEventId.current = Math.max(threadEventId.current, sequence); else runEventId.current = Math.max(runEventId.current, sequence);
-    setEvents((old) => [...old.slice(-299), event]);
-    const { data, interrupts } = eventData(event);
-    if (Array.isArray(interrupts) && interrupts.length) { const payload = interrupts[0]?.value || interrupts[0]; setInterrupt(payload); setEditArgs(JSON.stringify(payload.arguments || {}, null, 2)); }
-    else if (event.event_name === 'execution.interrupted') setInterrupt({ summary: 'A execução aguarda uma decisão.' });
-    if (source !== 'thread' && event.event_name === 'stream.messages') { const delta = Array.isArray(data) ? data.map((item: any) => item?.delta?.text || '').join('') : typeof data === 'string' ? data : ''; if (delta) setMessages((old) => { const previous = old[old.length - 1]; return previous?.role === 'assistant' ? [...old.slice(0, -1), { role: 'assistant', content: previous.content + delta }] : [...old, { role: 'assistant', content: delta }]; }); }
-  }
-  async function consume(response: Response, source = 'run') { if (!response.body) return; const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = ''; while (true) { const part = await reader.read(); if (part.done) break; buffer += decoder.decode(part.value); const chunks = buffer.split('\n\n'); buffer = chunks.pop() || ''; for (const chunk of chunks) { const line = chunk.split('\n').find((item) => item.startsWith('data: ')); if (!line) continue; try { acceptEvent(JSON.parse(line.slice(6)) as EventRow, source); } catch { /* heartbeat */ } } } }
-  async function connectThreadStream(threadId: string) { streamAbort.current?.abort(); const controller = new AbortController(); streamAbort.current = controller; try { const response = await api(`/threads/${threadId}/stream`, { headers: threadEventId.current ? { 'Last-Event-ID': String(threadEventId.current) } : {}, signal: controller.signal }); await consume(response, 'thread'); } catch (cause) { if ((cause as Error).name !== 'AbortError') setError('Stream persistente desconectado; selecione a thread novamente.'); } }
-  async function openThread(item: Thread) { streamAbort.current?.abort(); setSelected(item); setMessages([]); setEvents([]); setRuns([]); setCheckpoints([]); setSelectedCheckpoint(null); setInterrupt(null); threadEventId.current = 0; runEventId.current = 0; seen.current.clear(); try { const state = await (await api(`/threads/${item.thread_id}/state`)).json(); setMessages((state.state?.values?.messages || []).map((message: any) => ({ role: message.role === 'human' ? 'user' : message.role, content: String(message.content || '') }))); await Promise.all([refreshRuns(item.thread_id), loadCheckpoints(item.thread_id)]); void connectThreadStream(item.thread_id); } catch { setError('Falha ao abrir a thread.'); } }
-  async function login(e: FormEvent) { e.preventDefault(); try { await api('/session', { method: 'POST', body: JSON.stringify({ token }) }); setAuth(true); setToken(''); setError(''); } catch { setError('Token inválido.'); } }
-  async function newThread() { try { const item = await (await api('/threads', { method: 'POST', body: '{}' })).json(); await refreshThreads(); await openThread(item); } catch { setError('Falha ao criar thread.'); } }
-  async function renameThread() { if (!selected) return; const title = window.prompt('Novo título da thread', selected.title || 'Nova conversa'); if (!title?.trim()) return; try { const item = await (await api(`/threads/${selected.thread_id}`, { method: 'PATCH', body: JSON.stringify({ title }) })).json(); setSelected(item); await refreshThreads(); } catch { setError('Falha ao renomear thread.'); } }
-  async function archiveThread(archived: boolean) { if (!selected) return; try { await api(`/threads/${selected.thread_id}`, { method: 'PATCH', body: JSON.stringify({ archived }) }); setSelected(null); streamAbort.current?.abort(); await refreshThreads(); } catch { setError('Falha ao atualizar arquivamento.'); } }
-  async function send(e: FormEvent) { e.preventDefault(); if (!selected || !text.trim() || busy || interrupt) return; const content = text.trim(); setText(''); setMessages((old) => [...old, { role: 'user', content }]); setBusy(true); try { await consume(await api(`/threads/${selected.thread_id}/runs/stream`, { method: 'POST', headers: runEventId.current ? { 'Last-Event-ID': String(runEventId.current) } : {}, body: JSON.stringify({ input: { messages: [{ role: 'user', content }] } }) })); await Promise.all([refreshThreads(), refreshRuns(selected.thread_id)]); } catch (cause) { if ((cause as Error).message === 'auth') setAuth(false); else setError('Falha no run.'); } finally { setBusy(false); } }
-  async function decide(type: 'approve' | 'reject' | 'edit') { if (!selected) return; const run = runs.find((item) => item.status === 'interrupted') || runs[0]; if (!run) return; let resume: boolean | Record<string, unknown> = type === 'approve' ? true : type === 'reject' ? false : {}; if (type === 'edit') { try { resume = JSON.parse(editArgs || '{}'); } catch { setError('Argumentos de edição inválidos.'); return; } } setBusy(true); setInterrupt(null); try { await consume(await api(`/threads/${selected.thread_id}/runs/stream`, { method: 'POST', headers: runEventId.current ? { 'Last-Event-ID': String(runEventId.current) } : {}, body: JSON.stringify({ run_id: run.run_id, command: { resume } }) })); await refreshRuns(selected.thread_id); } finally { setBusy(false); } }
-  async function cancelRun(run: Run) { if (!selected) return; try { await api(`/threads/${selected.thread_id}/runs/${run.run_id}/cancel`, { method: 'POST', body: '{}' }); await refreshRuns(selected.thread_id); } catch { setError('Falha ao cancelar run.'); } }
-  async function retryRun(run: Run) { if (!selected) return; setBusy(true); try { await consume(await api(`/threads/${selected.thread_id}/runs/${run.run_id}/retry`, { method: 'POST', body: '{}' })); await refreshRuns(selected.thread_id); } catch { setError('Falha ao repetir run.'); } finally { setBusy(false); } }
-
-  if (auth === null) return <main className="center">Carregando AMP Chat…</main>;
-  if (!auth) return <main className="center"><form className="login" onSubmit={login}><span className="eyebrow">AMP CHAT</span><h1>Runtime local</h1><p>Informe o token compartilhado da rede local.</p><input autoFocus type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Token de acesso"/><button>Entrar</button>{error && <small className="error">{error}</small>}</form></main>;
-  const visibleThreads = threads.filter((item) => showArchived ? Boolean(item.archived_at) : !item.archived_at);
-  return <main className="shell"><aside className="sidebar"><div className="brand"><b>AMP</b><span>Chat local</span></div><button className="primary" onClick={newThread}>＋ Nova thread</button><div className="filter"><button className={!showArchived ? 'outline active-filter' : 'outline'} onClick={() => setShowArchived(false)}>Ativas</button><button className={showArchived ? 'outline active-filter' : 'outline'} onClick={() => setShowArchived(true)}>Arquivadas</button></div><div className="threads">{visibleThreads.map((item) => <button className={selected?.thread_id === item.thread_id ? 'thread active' : 'thread'} key={item.thread_id} onClick={() => openThread(item)}>{item.title || 'Nova conversa'}<small>{item.last_message_at ? new Date(item.last_message_at).toLocaleDateString('pt-BR') : ''}</small></button>)}{!visibleThreads.length && <p className="muted">Nenhuma thread.</p>}</div></aside><section className="chat"><header><div><span className="eyebrow">THREAD</span><h2>{selected?.title || 'Converse com o Ollama'}</h2></div>{selected && <div className="header-actions"><button className="outline" onClick={renameThread}>Renomear</button><button className="outline" onClick={() => archiveThread(!selected.archived_at)}>{selected.archived_at ? 'Restaurar' : 'Arquivar'}</button></div>}</header><div className="messages">{!selected && <div className="empty"><h1>Chat durável e observável</h1><p>Crie uma thread para iniciar.</p></div>}{messages.map((message, i) => <article className={`message ${message.role}`} key={`${i}-${message.content.slice(0, 12)}`}><small>{message.role === 'user' ? 'Você' : 'AMP'}</small><div>{message.content}</div></article>)}{busy && <div className="typing">AMP está executando…</div>}</div>{interrupt && <div className="interrupt"><b>Aprovação necessária</b><p>{String(interrupt.summary || 'Confirmar a ação solicitada pela ferramenta?')}</p>{interrupt.arguments && <textarea value={editArgs} onChange={(e) => setEditArgs(e.target.value)} aria-label="Argumentos editáveis"/>}<div><button className="outline" onClick={() => decide('reject')}>Rejeitar</button>{interrupt.arguments && <button className="outline" onClick={() => decide('edit')}>Editar e executar</button>}<button className="primary" onClick={() => decide('approve')}>Aprovar</button></div></div>}<form className="composer" onSubmit={send}><input disabled={!selected || busy || !!interrupt} value={text} onChange={(e) => setText(e.target.value)} placeholder={selected ? 'Escreva uma mensagem…' : 'Crie uma thread para começar'}/><button className="primary" disabled={!selected || busy || !!interrupt || !text.trim()}>Enviar</button></form></section><aside className="inspector"><span className="eyebrow">RUNTIME</span><b>Runs</b>{selected && runs.slice(0, 5).map((run) => <div className="run-card" key={run.run_id}><span>{run.status}</span><small>{run.created_at ? new Date(run.created_at).toLocaleTimeString('pt-BR') : ''}</small>{['queued', 'running'].includes(run.status) && <button className="outline" onClick={() => cancelRun(run)}>Cancelar</button>}{['failed', 'cancelled', 'completed'].includes(run.status) && <button className="outline" onClick={() => retryRun(run)}>Repetir</button>}</div>)}<b className="panel-title">Timeline</b>{events.slice(-12).reverse().map((event, i) => <div className="event" key={`${i}-${event.stream_sequence || event.sequence_no}-${event.event_name}`}><i/><span>{String(event.event_name || event.event_type || 'evento')}<small>{event.recorded_at ? new Date(event.recorded_at).toLocaleTimeString('pt-BR') : 'agora'}</small></span></div>)}<b className="panel-title">Checkpoints</b>{checkpoints.slice(0, 8).map((checkpoint, i) => <button className="checkpoint" key={checkpoint.checkpoint_id || i} onClick={() => setSelectedCheckpoint(checkpoint)}>{checkpoint.checkpoint_id?.slice(0, 12) || `checkpoint ${i + 1}`}<small>{checkpoint.created_at ? new Date(checkpoint.created_at).toLocaleString('pt-BR') : ''}</small></button>)}{selectedCheckpoint && <pre className="checkpoint-view">{JSON.stringify({ checkpoint_id: selectedCheckpoint.checkpoint_id, parent: selectedCheckpoint.parent_checkpoint_id, next: selectedCheckpoint.next, metadata: selectedCheckpoint.metadata }, null, 2)}</pre>}{error && <p className="error">{error}</p>}</aside></main>;
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [token, setToken] = useState(''); const [threads, setThreads] = useState<Thread[]>([]);
+  const [selected, setSelected] = useState<Thread | null>(null); const [showArchived, setShowArchived] = useState(false); const [error, setError] = useState('');
+  const refreshThreads = async () => {
+    try { setThreads(((await (await api(`/threads?include_archived=${showArchived}`)).json()).threads || []) as Thread[]); }
+    catch (cause) { if ((cause as Error).message === 'auth') setAuthenticated(false); else setError('Falha ao carregar threads.'); }
+  };
+  useEffect(() => { api('/session').then(() => setAuthenticated(true)).catch(() => setAuthenticated(false)); }, []);
+  useEffect(() => { if (authenticated) void refreshThreads(); }, [authenticated, showArchived]);
+  async function login(event: FormEvent) { event.preventDefault(); try { await api('/session', { method: 'POST', body: JSON.stringify({ token }) }); setToken(''); setAuthenticated(true); } catch { setError('Token inválido.'); } }
+  async function createThread() { try { const thread = await (await api('/threads', { method: 'POST', body: '{}' })).json() as Thread; await refreshThreads(); setSelected(thread); } catch { setError('Falha ao criar thread.'); } }
+  async function rename() { if (!selected) return; const title = window.prompt('Novo título', selected.title); if (!title?.trim()) return; const updated = await (await api(`/threads/${selected.thread_id}`, { method: 'PATCH', body: JSON.stringify({ title }) })).json() as Thread; setSelected(updated); await refreshThreads(); }
+  async function archive() { if (!selected) return; await api(`/threads/${selected.thread_id}`, { method: 'PATCH', body: JSON.stringify({ archived: !selected.archived_at }) }); setSelected(null); await refreshThreads(); }
+  if (authenticated === null) return <main className="center">Carregando AMP Chat…</main>;
+  if (!authenticated) return <main className="center"><form className="login" onSubmit={login}><span className="eyebrow">AMP CHAT</span><h1>Runtime local</h1><p>Informe o token compartilhado da rede local.</p><input autoFocus type="password" value={token} onChange={(event) => setToken(event.target.value)} placeholder="Token de acesso" /><button>Entrar</button>{error && <small className="error">{error}</small>}</form></main>;
+  return <main className="shell"><aside className="sidebar"><div className="brand"><b>AMP</b><span>Chat local</span></div><button className="primary" onClick={() => void createThread()}>＋ Nova thread</button><div className="filter"><button className={!showArchived ? 'outline active-filter' : 'outline'} onClick={() => setShowArchived(false)}>Ativas</button><button className={showArchived ? 'outline active-filter' : 'outline'} onClick={() => setShowArchived(true)}>Arquivadas</button></div><div className="threads">{threads.map((thread) => <button className={selected?.thread_id === thread.thread_id ? 'thread active' : 'thread'} key={thread.thread_id} onClick={() => setSelected(thread)}>{thread.title || 'Nova conversa'}<small>{thread.last_message_at && new Date(thread.last_message_at).toLocaleDateString('pt-BR')}</small></button>)}</div></aside>
+    {selected ? <ThreadChat key={selected.thread_id} thread={selected} onRefresh={refreshThreads} /> : <section className="chat"><header><div><span className="eyebrow">AMP CHAT</span><h2>Converse com o Ollama</h2></div></header><div className="empty"><h1>Chat durável e observável</h1><p>Crie ou escolha uma thread para começar.</p></div></section>}
+    {selected && <div className="thread-actions"><button className="outline" onClick={() => void rename()}>Renomear</button><button className="outline" onClick={() => void archive()}>{selected.archived_at ? 'Restaurar' : 'Arquivar'}</button></div>}{error && <p className="toast error">{error}</p>}
+  </main>;
 }

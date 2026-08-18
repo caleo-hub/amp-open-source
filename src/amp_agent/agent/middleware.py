@@ -7,8 +7,8 @@ from typing import Any
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ToolCallRequest
 from langchain_core.messages import SystemMessage
 
-from .models import get_fast_model, get_smart_model
-from .prompts import FAST_SYSTEM_PROMPT, SMART_SYSTEM_PROMPT
+from .models import get_fast_model
+from .prompts import FAST_SYSTEM_PROMPT
 from .state import AgentState
 from ..observability.sanitize import safe_error
 from ..persistence.runtime import assert_execution_active, consume_budget, record_event
@@ -34,13 +34,12 @@ class RuntimeAgentMiddleware(AgentMiddleware):
     def __init__(self) -> None:
         super().__init__()
         self.fast_model = get_fast_model()
-        self.smart_model = get_smart_model()
 
     def _prepare_model_request(self, request: ModelRequest):
-        profile = request.state.get("profile", "fast")
-        model = self.smart_model if profile == "smart" else self.fast_model
-        prompt = SMART_SYSTEM_PROMPT if profile == "smart" else FAST_SYSTEM_PROMPT
-        allowed = allowed_tool_names(request.state.get("channel")) if profile == "fast" else frozenset()
+        profile = "fast"
+        model = self.fast_model
+        prompt = FAST_SYSTEM_PROMPT
+        allowed = allowed_tool_names(request.state.get("channel"))
         tools = [tool for tool in request.tools if _tool_name(tool) in allowed]
         return profile, request.override(
             model=model,

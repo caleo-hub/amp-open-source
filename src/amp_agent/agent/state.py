@@ -4,7 +4,7 @@ from langchain.agents import AgentState as LangChainAgentState
 from typing_extensions import TypedDict
 
 
-ModelProfile = Literal["fast", "smart"]
+ModelProfile = Literal["fast"]
 
 
 class AgentState(LangChainAgentState, total=False):
