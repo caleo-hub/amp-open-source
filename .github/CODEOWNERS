@@ -1,0 +1,10 @@
+* @caleo-hub
+
+/apps/ @caleo-hub
+/services/ @caleo-hub
+/agents/ @caleo-hub
+/mcp-servers/ @caleo-hub
+/packages/ @caleo-hub
+/deploy/ @caleo-hub
+/docs/architecture/ @caleo-hub
+/docs/adr/ @caleo-hub

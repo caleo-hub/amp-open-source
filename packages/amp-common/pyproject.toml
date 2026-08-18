@@ -1,0 +1,10 @@
+[project]
+name = "amp-common"
+version = "0.1.0"
+description = "Shared AMP contracts and runtime context types"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.11.0"]
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.9.0"]
+build-backend = "uv_build"

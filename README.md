@@ -68,6 +68,39 @@ flowchart TB
 - [GitHub Issues](https://github.com/caleo-hub/amp-open-source/issues)
 - [GitHub Project](https://github.com/users/caleo-hub/projects/6)
 
+## Monorepo
+
+```text
+apps/          interfaces TypeScript/React
+services/      microserviços Python/FastAPI
+agents/        agentes e workflows LangGraph
+mcp-servers/   capabilities governadas via MCP
+packages/      contratos e bibliotecas compartilhadas
+deploy/        containers, Kubernetes e GitOps
+docs/          arquitetura, ADRs e convenções
+```
+
+O runtime legado não é dependência da nova plataforma. Consulte
+[as convenções](docs/conventions.md) e o
+[ADR inicial](docs/adr/0001-platform-foundations.md) antes de adicionar componentes.
+
+## Desenvolvimento
+
+Requisitos: Python 3.12+, `uv` e Node.js 22+.
+
+```bash
+cp .env.example .env
+make bootstrap
+make check
+```
+
+Para comprovar que os templates são utilizáveis:
+
+```bash
+uv run python tools/scaffold.py service billing
+uv run python tools/scaffold.py agent research
+```
+
 ## Roadmap atual
 
 | Fase | Resultado | Issue |

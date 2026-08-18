@@ -1,0 +1,12 @@
+[project]
+name = "amp-{{SLUG}}-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["amp-common", "langgraph>=0.6.0"]
+
+[tool.uv.sources]
+amp-common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.9.0"]
+build-backend = "uv_build"

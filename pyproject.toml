@@ -1,26 +1,42 @@
 [project]
-name = "amp-agent"
+name = "amp-monorepo"
 version = "0.1.0"
-description = "AMP Agent local com LangGraph, Ollama e FastAPI"
+description = "Agent Managed Platform monorepo development tools"
 requires-python = ">=3.12"
-dependencies = [
-    "awsiotsdk>=1.31.0",
-    "langchain>=1.3.15",
-    "langgraph-checkpoint-postgres>=3.0.0",
-    "psycopg[binary,pool]>=3.2.0",
-    "fastapi>=0.141.1",
-    "langchain-ollama>=1.1.0",
-    "langgraph>=1.2.11",
-    "uvicorn[standard]>=0.52.3",
-    "httpx>=0.28.1",
-    "opentelemetry-api>=1.29.0",
-    "opentelemetry-sdk>=1.29.0",
-    "opentelemetry-exporter-otlp-proto-http>=1.29.0",
-    "opentelemetry-instrumentation-fastapi>=0.50b0",
-    "opentelemetry-instrumentation-httpx>=0.50b0",
-    "opentelemetry-instrumentation-psycopg>=0.50b0",
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy>=1.17.0",
+  "pytest>=8.4.0",
+  "pytest-cov>=6.2.0",
+  "ruff>=0.12.0",
 ]
 
-[build-system]
-requires = ["uv_build>=0.12.5,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv.workspace]
+members = ["services/*", "agents/*", "packages/*"]
+
+[tool.uv.sources]
+amp-common = { workspace = true }
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests", "services", "agents", "packages"]
+pythonpath = ["tools"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["docs", "templates"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["services", "agents", "packages", "tools", "tests"]
+exclude = ["templates"]

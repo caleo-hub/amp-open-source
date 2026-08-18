@@ -35,6 +35,10 @@ dist/
 build/
 wheels/
 *.egg-info
+node_modules/
+coverage/
+htmlcov/
+*.tsbuildinfo
 
 # Local Docker Compose secrets
 secrets/

@@ -2,14 +2,17 @@
 
 Obrigado pelo interesse na AMP Open Source.
 
-Este projeto prioriza aprendizado, simplicidade e evolução progressiva. Uma contribuição é especialmente útil quando resolve um problema atual sem introduzir infraestrutura prematura.
+Este projeto implementa uma Agent Managed Platform self-hosted. Contribuições devem respeitar a
+separação entre Control Plane, Data Plane, Model Plane e Tool Plane e manter os contratos entre
+componentes explícitos.
 
 ## Antes de começar
 
 1. Consulte as Issues existentes.
 2. Para mudanças maiores, abra uma Issue explicando o problema e a proposta.
-3. Mantenha a alteração pequena e focada.
-4. Nunca inclua senhas, tokens, dados pessoais, modelos baixados ou bancos locais.
+3. Consulte `docs/conventions.md` e os ADRs aplicáveis.
+4. Mantenha a alteração pequena e focada.
+5. Nunca inclua senhas, tokens, dados pessoais, modelos baixados ou bancos locais.
 
 ## Uma boa contribuição
 
@@ -18,7 +21,16 @@ Este projeto prioriza aprendizado, simplicidade e evolução progressiva. Uma co
 - inclui teste ou procedimento de verificação apropriado;
 - atualiza a documentação quando necessário;
 - respeita o princípio de menor privilégio;
-- evita adicionar uma nova tecnologia sem necessidade demonstrada.
+- não permite que agentes acessem providers ou infraestrutura diretamente;
+- inclui contratos e observabilidade proporcionais ao componente.
+
+## Qualidade
+
+Use Python 3.12+, `uv`, Ruff, mypy estrito e pytest para código Python. O console usa TypeScript
+estrito, React, ESLint e Prettier. Depois de `make bootstrap`, execute `make check` antes de enviar.
+
+Novos serviços e agentes devem partir dos geradores documentados em `docs/conventions.md`, declarar
+ownership e permanecer implantáveis de forma independente.
 
 ## Commits e pull requests
 
